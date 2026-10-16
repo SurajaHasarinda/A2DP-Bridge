@@ -555,6 +555,8 @@ private:
         bool     no_rtp = false;   /* send without RTP header (aptX, aptX LL) */
     };
     static const int MEDIA_QUEUE_CAPACITY = static_cast<int>(MEDIA_QUEUE_PACKETS);
+    /* Longest backlog of audio in the queue (see send_media) */
+    static constexpr uint32_t MAX_QUEUE_MS = 200;
     MediaPacket media_queue_[MEDIA_QUEUE_CAPACITY];
     int media_queue_head_ = 0;   /* write position (WASAPI thread) */
     int media_queue_tail_ = 0;   /* read position (BTstack thread) */

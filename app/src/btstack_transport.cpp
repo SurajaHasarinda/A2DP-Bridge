@@ -2411,6 +2411,19 @@ bool BtStackTransport::send_media(const uint8_t *data, uint32_t size,
         slot.no_rtp = (codec == AudioCodec::Aptx || codec == AudioCodec::AptxLL);
         media_queue_head_ = (media_queue_head_ + 1) % MEDIA_QUEUE_CAPACITY;
         int depth = media_queue_count_.fetch_add(1) + 1;
+
+        /* Keep the backlog short in time, not only in packets: after the radio
+         * stalls (interference, the earbuds busy with another device) the
+         * queued audio would go out in one burst and play back fast to catch
+         * up. Measured with the RTP timestamps (samples); older packets beyond
+         * MAX_QUEUE_MS are dropped, so playback resumes at live audio. */
+        const uint32_t max_backlog = sample_rate_ / 1000u * MAX_QUEUE_MS;
+        while (max_backlog > 0 && depth > 1 &&
+               timestamp - media_queue_[media_queue_tail_].timestamp > max_backlog) {
+            media_queue_tail_ = (media_queue_tail_ + 1) % MEDIA_QUEUE_CAPACITY;
+            depth = media_queue_count_.fetch_sub(1) - 1;
+            link_stats().queue_drops.fetch_add(1, std::memory_order_relaxed);
+        }
         link_stats().queue_depth.store(static_cast<uint32_t>(depth), std::memory_order_relaxed);
     }
     /* --- send_mutex released --- */
