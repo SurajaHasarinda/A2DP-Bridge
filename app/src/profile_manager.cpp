@@ -47,6 +47,8 @@ void ProfileManager::load(uint16_t legacy_max_media_payload) {
             p.volume_device_name = item.value("volume_device_name", std::string());
             if (p.volume_sync != "off" && (p.volume_sync != "device" || p.volume_device_id.empty()))
                 p.volume_sync = "auto";
+            p.latency          = item.value("latency", std::string("standard"));
+            if (p.latency != "low" && p.latency != "lowest") p.latency = "standard";
             if (item.contains("max_media_payload")) {
                 int v = item.value("max_media_payload", static_cast<int>(MEDIA_PAYLOAD_LIMIT_DEFAULT));
                 p.max_media_payload = clamp_media_payload_limit(v > 0 ? static_cast<uint32_t>(v) : 0u);
@@ -88,7 +90,8 @@ void ProfileManager::save() const {
             {"volume_sync",      p.volume_sync},
             {"volume_device_id", p.volume_device_id},
             {"volume_device_name", p.volume_device_name},
-            {"max_media_payload", p.max_media_payload}
+            {"max_media_payload", p.max_media_payload},
+            {"latency",          p.latency}
         });
     }
 

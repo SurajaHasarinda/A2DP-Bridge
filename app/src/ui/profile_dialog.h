@@ -67,6 +67,7 @@ private:
     QCheckBox *abr_ = nullptr;
     QComboBox *sample_rate_ = nullptr;
     QComboBox *bit_depth_ = nullptr;
+    QComboBox *latency_ = nullptr;
 
     QFormLayout *audio_form_ = nullptr;
     QComboBox *capture_ = nullptr;

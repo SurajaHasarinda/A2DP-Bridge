@@ -24,7 +24,8 @@ public:
 
 private:
     struct Sample {
-        uint64_t tick_ms = 0, packets = 0, bytes = 0, dropped = 0, capture_frames = 0, capture_dropped = 0;
+        uint64_t tick_ms = 0, packets = 0, bytes = 0, dropped = 0, capture_frames = 0, capture_dropped = 0,
+                 stalls = 0;
     };
     LinkQualityDialog(Backend *backend, QWidget *parent);
     static Sample take_sample();
@@ -37,7 +38,7 @@ private:
     QLabel *codec_value_, *bitrate_value_, *packets_value_, *queue_value_, *radio_value_;
     QLabel *theory_value_, *airtime_value_;
     QProgressBar *theory_gauge_, *airtime_gauge_;
-    QLabel *sent_value_, *dropped_value_, *capture_value_;
+    QLabel *sent_value_, *dropped_value_, *capture_value_, *max_gap_value_, *stalls_value_;
 
     Sample baseline_, prev_;
     bool have_prev_ = false;

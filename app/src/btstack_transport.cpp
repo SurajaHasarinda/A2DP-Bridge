@@ -1341,8 +1341,27 @@ void BtStackTransport::afh_tick() {
         std::lock_guard<std::mutex> lock(link_radio_mutex());
         link_radio_unlocked().has_rssi = false;
         link_radio_unlocked().afh_in_use = -1;
+        link_radio_unlocked().role = -1;
         return;
     }
+
+    /* 3. Stay the central of the link: the central schedules the radio slots,
+     * and the AFH classification above only applies at the central. Earbuds
+     * may take the role when they connect; ask for it back, twice at most per
+     * connection so a device that refuses is left alone. */
+    const hci_role_t role = gap_get_role(handle);
+    {
+        std::lock_guard<std::mutex> lock(link_radio_mutex());
+        link_radio_unlocked().role = role == HCI_ROLE_MASTER ? 0 : role == HCI_ROLE_SLAVE ? 1 : -1;
+    }
+    if (role == HCI_ROLE_SLAVE && has_remote_addr_ && role_switch_requests_ < 2) {
+        role_switch_requests_++;
+        fprintf(stderr, "BTstack: peripheral on the link, requesting the central role (attempt %d)\n",
+                role_switch_requests_);
+        gap_request_role(remote_addr_be_, HCI_ROLE_MASTER);
+        return;
+    }
+
     if (!hci_can_send_command_packet_now()) return;
     if (afh_ticks_ % 2)
         hci_send_cmd(&hci_read_rssi, handle);
@@ -2416,8 +2435,8 @@ bool BtStackTransport::send_media(const uint8_t *data, uint32_t size,
          * stalls (interference, the earbuds busy with another device) the
          * queued audio would go out in one burst and play back fast to catch
          * up. Measured with the RTP timestamps (samples); older packets beyond
-         * MAX_QUEUE_MS are dropped, so playback resumes at live audio. */
-        const uint32_t max_backlog = sample_rate_ / 1000u * MAX_QUEUE_MS;
+         * the latency mode's limit are dropped, so playback resumes at live audio. */
+        const uint32_t max_backlog = sample_rate_ / 1000u * max_queue_ms_.load();
         while (max_backlog > 0 && depth > 1 &&
                timestamp - media_queue_[media_queue_tail_].timestamp > max_backlog) {
             media_queue_tail_ = (media_queue_tail_ + 1) % MEDIA_QUEUE_CAPACITY;
@@ -2578,6 +2597,11 @@ void BtStackTransport::handle_packet(uint8_t packet_type, uint16_t channel,
                 hci_event_pin_code_request_get_bd_addr(packet, addr);
                 gap_pin_code_response(addr, "0000");
             }
+            break;
+
+        case HCI_EVENT_ROLE_CHANGE:
+            fprintf(stderr, "BTstack: role change (status 0x%02X): now %s\n", packet[2],
+                    packet[9] == HCI_ROLE_MASTER ? "central" : "peripheral");
             break;
 
         case HCI_EVENT_CONNECTION_COMPLETE: {
@@ -2764,6 +2788,7 @@ void BtStackTransport::handle_a2dp_event(uint8_t *packet, uint16_t size) {
             signal_event(connect_event_, false);
         } else {
             a2dp_con_handle_.store(a2dp_subevent_signaling_connection_established_get_con_handle(packet));
+            role_switch_requests_ = 0;
             fprintf(stderr, "BTstack: Signaling connection established (cid=0x%04x, handle=0x%04x)\n",
                     a2dp_cid_, a2dp_con_handle_.load());
             /* Don't signal yet — wait for capability discovery to complete */
@@ -2978,6 +3003,7 @@ void BtStackTransport::handle_a2dp_event(uint8_t *packet, uint16_t size) {
             ls.start_capture_frames.store(ls.capture_frames.load());
             ls.start_capture_dropped.store(ls.capture_dropped_frames.load());
             ls.stream_starts.fetch_add(1);
+            last_send_ms_ = 0;  /* the wait for the first packet is no stall */
         }
         streaming_.store(true);
         start_result_.store(true);
@@ -3024,6 +3050,16 @@ void BtStackTransport::handle_a2dp_event(uint8_t *packet, uint16_t size) {
                         stats.send_errors.fetch_add(1, std::memory_order_relaxed);
                     } else {
                         stats.packets_sent.fetch_add(1, std::memory_order_relaxed);
+                        /* Gap since the previous packet: the stream is continuous
+                         * (silent render stream), so a long one is a stall */
+                        const uint64_t now_ms = GetTickCount64();
+                        if (last_send_ms_ != 0) {
+                            const uint32_t gap = static_cast<uint32_t>(now_ms - last_send_ms_);
+                            uint32_t max = stats.max_send_gap_ms.load(std::memory_order_relaxed);
+                            while (gap > max && !stats.max_send_gap_ms.compare_exchange_weak(max, gap)) {}
+                            if (gap >= STALL_GAP_MS) stats.stalls.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        last_send_ms_ = now_ms;
                         stats.bytes_sent.fetch_add(pkt.size + (pkt.no_rtp ? 0 : RTP_HEADER_SIZE),
                                                    std::memory_order_relaxed);
                     }

@@ -43,6 +43,7 @@ struct ConnectionProfile {
     bool test_tone = false;       /* runtime only, not saved: send the test tone
                                    * (test_tone.h) instead of captured audio */
     uint16_t max_media_payload = MEDIA_PAYLOAD_LIMIT_DEFAULT; /* max media packet size (media_payload_limit.h) */
+    std::string latency = "standard"; /* "standard", "low", "lowest" (latency_mode.h) */
 };
 
 class ProfileManager {

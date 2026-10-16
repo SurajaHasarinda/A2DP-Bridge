@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 
 namespace {
@@ -81,6 +82,19 @@ std::vector<WifiAp> afh_survey_wifi() {
     if (WlanEnumInterfaces(h, nullptr, &ifs) == ERROR_SUCCESS && ifs) {
         for (DWORD i = 0; i < ifs->dwNumberOfItems; i++) {
             const GUID &guid = ifs->InterfaceInfo[i].InterfaceGuid;
+            /* BSSID of the access point this interface is connected to, if any */
+            DOT11_MAC_ADDRESS connected_bssid = {};
+            bool is_connected = false;
+            if (ifs->InterfaceInfo[i].isState == wlan_interface_state_connected) {
+                DWORD size = 0;
+                PWLAN_CONNECTION_ATTRIBUTES conn = nullptr;
+                if (WlanQueryInterface(h, &guid, wlan_intf_opcode_current_connection, nullptr, &size,
+                                       reinterpret_cast<PVOID *>(&conn), nullptr) == ERROR_SUCCESS && conn) {
+                    memcpy(connected_bssid, conn->wlanAssociationAttributes.dot11Bssid, sizeof(connected_bssid));
+                    is_connected = true;
+                    WlanFreeMemory(conn);
+                }
+            }
             PWLAN_BSS_LIST list = nullptr;
             if (WlanGetNetworkBssList(h, &guid, nullptr, dot11_BSS_type_any, FALSE, nullptr, &list) ==
                     ERROR_SUCCESS && list) {
@@ -94,6 +108,7 @@ std::vector<WifiAp> afh_survey_wifi() {
                     ap.rssi_dbm = static_cast<int>(e.lRssi);
                     ap.ssid.assign(reinterpret_cast<const char *>(e.dot11Ssid.ucSSID),
                                    std::min<ULONG>(e.dot11Ssid.uSSIDLength, 32));
+                    ap.connected = is_connected && memcmp(e.dot11Bssid, connected_bssid, sizeof(connected_bssid)) == 0;
                     aps.push_back(ap);
                 }
                 WlanFreeMemory(list);
@@ -115,9 +130,13 @@ AfhClassification afh_classify(const std::string &policy) {
         /* Strongest access point per channel, loudest channels first */
         std::map<int, int> loudest;
         for (const WifiAp &ap : afh_survey_wifi()) {
-            if (ap.rssi_dbm < AFH_AUTO_RSSI_DBM) continue;
+            /* The PC's own Wi-Fi traffic is the closest interferer: always
+             * avoided, ranked above every other channel (kept first when
+             * AFH_MIN_CHANNELS leaves room for only some) */
+            const int rank = ap.connected ? 0 : ap.rssi_dbm;
+            if (!ap.connected && ap.rssi_dbm < AFH_AUTO_RSSI_DBM) continue;
             auto it = loudest.find(ap.channel);
-            if (it == loudest.end() || ap.rssi_dbm > it->second) loudest[ap.channel] = ap.rssi_dbm;
+            if (it == loudest.end() || rank > it->second) loudest[ap.channel] = rank;
         }
         std::vector<std::pair<int, int>> order(loudest.begin(), loudest.end());
         std::sort(order.begin(), order.end(),

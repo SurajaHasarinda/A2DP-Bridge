@@ -83,6 +83,7 @@ LinkQualityDialog::Sample LinkQualityDialog::take_sample() {
     r.dropped = s.queue_drops.load(std::memory_order_relaxed) + s.send_errors.load(std::memory_order_relaxed);
     r.capture_frames = s.capture_frames.load(std::memory_order_relaxed);
     r.capture_dropped = s.capture_dropped_frames.load(std::memory_order_relaxed);
+    r.stalls = s.stalls.load(std::memory_order_relaxed);
     return r;
 }
 
@@ -161,6 +162,8 @@ LinkQualityDialog::LinkQualityDialog(Backend *backend, QWidget *parent)
     sent_value_ = add_row(g, "quality.sent_total");
     dropped_value_ = add_row(g, "quality.dropped");
     capture_value_ = add_row(g, "quality.capture_dropped");
+    max_gap_value_ = add_row(g, "quality.max_gap");
+    stalls_value_ = add_row(g, "quality.stalls");
     add_help("quality.loss_help");
 
     auto *bar = new QHBoxLayout;
@@ -168,6 +171,7 @@ LinkQualityDialog::LinkQualityDialog(Backend *backend, QWidget *parent)
     reset->setAutoDefault(false);
     connect(reset, &QPushButton::clicked, this, [this] {
         baseline_ = take_sample();
+        link_stats().max_send_gap_ms.store(0, std::memory_order_relaxed);
         refresh();
     });
     bar->addWidget(reset);
@@ -179,6 +183,7 @@ LinkQualityDialog::LinkQualityDialog(Backend *backend, QWidget *parent)
     root->addLayout(bar);
 
     baseline_ = take_sample();
+    link_stats().max_send_gap_ms.store(0, std::memory_order_relaxed);
     prev_ = baseline_;
     connect(timer_, &QTimer::timeout, this, &LinkQualityDialog::refresh);
     refresh();
@@ -252,6 +257,12 @@ void LinkQualityDialog::refresh() {
     const double cap_pct = cap_frames ? 100.0 * cap_dropped / cap_frames : 0.0;
     capture_value_->setText(fmt_lit("%.0f ms (%.2f%%)", cap_ms, cap_pct));
     set_flag(capture_value_, "error", cap_dropped > 0);
+    const uint32_t max_gap = link_stats().max_send_gap_ms.load(std::memory_order_relaxed);
+    const uint64_t stalls = now.stalls - baseline_.stalls;
+    max_gap_value_->setText(max_gap ? fmt_lit("%u ms", (unsigned)max_gap) : QString("-"));
+    set_flag(max_gap_value_, "error", max_gap >= STALL_GAP_MS);
+    stalls_value_->setText(QString::number(stalls));
+    set_flag(stalls_value_, "error", stalls > 0);
 
     prev_ = now;
     have_prev_ = true;

@@ -48,6 +48,7 @@
 #include "btstack_transport.h"
 #include "config_path.h"
 #include "hci_capture.h"
+#include "latency_mode.h"
 #include "link_stats.h"
 #include "media_payload_limit.h"
 #include "remote_sink_client.h"
@@ -76,6 +77,8 @@ static std::string g_afh;
 
 /* --max-packet: advanced max media packet size (media_payload_limit.h) */
 static uint16_t g_max_packet = MEDIA_PAYLOAD_LIMIT_DEFAULT;
+/* --latency standard|low|lowest (latency_mode.h) */
+static LatencyMode g_latency = latency_mode("standard");
 static std::mutex g_encode_mutex;
 
 /* Audio buffer for float32->PCM conversion (sized per encoder sample width) */
@@ -313,6 +316,8 @@ static void audio_callback(
     uint32_t pcm_frames_per_codec_frame = encoder->get_pcm_frames_per_codec_frame();
     uint32_t first_ts = g_timestamp;
     uint32_t sent_packets = 0;
+    /* Latency mode: at most this many PCM frames of audio per packet */
+    const uint32_t max_packet_pcm = sample_rate / 1000u * g_latency.max_packet_ms;
     /* Send queue backlog before this round's packets go in (LHDC V5 ABR input) */
     uint32_t queue_before = transport->get_queue_depth();
 
@@ -326,8 +331,10 @@ static void audio_callback(
         );
 
         if (ok && out_size > 0) {
-            /* Flush if adding this frame would exceed MTU */
-            if (accum_size + out_size > max_raw && accum_frames > 0) {
+            /* Flush if adding this frame would exceed the MTU or the latency mode's packet length */
+            const bool too_long = max_packet_pcm > 0 &&
+                (accum_frames + out_frames) * pcm_frames_per_codec_frame > max_packet_pcm;
+            if ((accum_size + out_size > max_raw || too_long) && accum_frames > 0) {
                 transport->send_media(
                     accum, accum_size, first_ts,
                     static_cast<uint8_t>(accum_frames), g_active_codec);
@@ -431,6 +438,8 @@ static void print_usage(const char *prog) {
     printf("  -u <path>    USB device path for BTstack (optional)\n");
     printf("  --max-packet <bytes>  Advanced: max media packet size, %u-%u (recommended: %u)\n",
            MEDIA_PAYLOAD_LIMIT_MIN, MEDIA_PAYLOAD_LIMIT_MAX, MEDIA_PAYLOAD_LIMIT_DEFAULT);
+    printf("  --latency <mode>  standard, low or lowest: shorter send queue and packets,\n");
+    printf("               Auto prefers fast codecs (default: standard)\n");
     printf("  --remote-sink <host[:port]|auto>  Also show what a2dpwb_sink.py (tools/linux_sink)\n");
     printf("               receives on another PC (default port %u); auto finds it on the\n", REMOTE_SINK_DEFAULT_PORT);
     printf("               local network. Without -d, streams to that receiver\n");
@@ -519,6 +528,18 @@ static bool find_best_btstack_codec(const BtStackTransport::RemoteCodecCaps &cap
                    "classic aptX is used only if the device lists it too)\n");
     }
 
+    if (g_latency.fast_codecs_first) {
+        /* Low latency: aptX LL > aptX > SBC > AAC > LHDC V5 > aptX HD > LDAC */
+        if (caps.aptx_ll) { *selected_codec = AudioCodec::AptxLL; return true; }
+        if (caps.aptx)    { *selected_codec = AudioCodec::Aptx;   return true; }
+        if (caps.sbc)     { *selected_codec = AudioCodec::SBC;    return true; }
+        if (caps.aac)     { *selected_codec = AudioCodec::AAC;    return true; }
+        if (caps.lhdcv5)  { *selected_codec = AudioCodec::LHDCV5; return true; }
+        if (caps.aptx_hd) { *selected_codec = AudioCodec::AptxHD; return true; }
+        if (caps.ldac)    { *selected_codec = AudioCodec::LDAC;   return true; }
+        return false;
+    }
+
     /* Priority: LDAC > aptX HD > aptX LL > aptX > LHDC V5 (experimental) > AAC > SBC */
     if (caps.ldac)    { *selected_codec = AudioCodec::LDAC;   return true; }
     if (caps.aptx_hd) { *selected_codec = AudioCodec::AptxHD; return true; }
@@ -563,6 +584,7 @@ static int run_streaming(const uint8_t target_addr[6],
     }
 
     transport.set_media_payload_limit(g_max_packet);
+    transport.set_max_queue_ms(g_latency.max_queue_ms);
     if (!g_dev.hci_tcp.empty()) transport.set_hci_tcp(g_dev.hci_tcp);
     if (!g_dev.hci_tcp.empty() || !g_dev.hci_capture.empty()) transport.set_hci_dump_enabled(false);
     if (!g_dev.hci_capture.empty()) {
@@ -1056,6 +1078,11 @@ int main(int argc, char *argv[]) {
             if (g_max_packet != v)
                 printf("--max-packet %lu is outside %u-%u, using %u\n", v,
                        MEDIA_PAYLOAD_LIMIT_MIN, MEDIA_PAYLOAD_LIMIT_MAX, g_max_packet);
+        } else if (strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (strcmp(mode, "standard") != 0 && strcmp(mode, "low") != 0 && strcmp(mode, "lowest") != 0)
+                printf("--latency %s is not standard, low or lowest, using standard\n", mode);
+            g_latency = latency_mode(mode);
         } else if (strcmp(argv[i], "--hci-tcp") == 0 && i + 1 < argc) {
             g_dev.hci_tcp = argv[++i];
         } else if (strcmp(argv[i], "--hci-capture") == 0 && i + 1 < argc) {

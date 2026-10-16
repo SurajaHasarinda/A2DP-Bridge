@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
 
+#include "latency_mode.h"
 #include "a2dp_service.h"
 #include "audio_device_enum.h"
 #include "app_audio.h"
@@ -122,6 +123,7 @@ struct StreamingContext {
     bool                            abr_enabled = false;
     int                             bytes_per_sample = 2;
     int                             capture_mode = 0;
+    uint32_t                        max_packet_ms = 0; /* audio per packet, 0 = size limit only */
 
     std::vector<uint8_t>            pcm_buffer;
     std::vector<uint8_t>            encode_buffer;
@@ -370,6 +372,8 @@ static DWORD WINAPI encode_thread_func(LPVOID) {
             uint32_t pcm_frames_per_codec_frame = encoder->get_pcm_frames_per_codec_frame();
             uint32_t first_ts = g_ctx.timestamp;
             uint32_t sent_packets = 0;
+            /* Latency mode: at most this many PCM frames of audio per packet */
+            const uint32_t max_packet_pcm = sample_rate / 1000u * g_ctx.max_packet_ms;
             /* Send queue backlog before this round's packets go in: what the
              * radio has not managed to send yet (LHDC V5 ABR input) */
             uint32_t queue_before = transport->get_queue_depth();
@@ -382,7 +386,9 @@ static DWORD WINAPI encode_thread_func(LPVOID) {
                                           g_ctx.encode_buffer.data(), &out_size, &out_frames);
 
                 if (ok && out_size > 0) {
-                    if (accum_size + out_size > max_raw && accum_frames > 0) {
+                    const bool too_long = max_packet_pcm > 0 &&
+                        (accum_frames + out_frames) * pcm_frames_per_codec_frame > max_packet_pcm;
+                    if ((accum_size + out_size > max_raw || too_long) && accum_frames > 0) {
                         transport->send_media(accum, accum_size, first_ts,
                             static_cast<uint8_t>(accum_frames), g_ctx.active_codec);
                         sent_packets++;
@@ -1140,6 +1146,9 @@ void A2dpService::streaming_thread_func_inner() {
     BtStackTransport *transport = transport_.get();
     LOG_INFO("A2dpService: BTstack initialized successfully");
     transport->set_media_payload_limit(p.max_media_payload);
+    const LatencyMode latency = latency_mode(p.latency);
+    transport->set_max_queue_ms(latency.max_queue_ms);
+    g_ctx.max_packet_ms = latency.max_packet_ms;
 
     if (stop_requested_.load()) { running_.store(false); notify_state(State::Idle, L("status.ready")); return; }
 
@@ -1221,7 +1230,19 @@ void A2dpService::streaming_thread_func_inner() {
     /* Status text when the requested codec was replaced (empty = none) */
     std::string fallback_text;
 
-    auto pick_best = [&caps](AudioCodec &out) {
+    auto pick_best = [&caps, &latency](AudioCodec &out) {
+        if (latency.fast_codecs_first) {
+            /* Low latency: short frames and small decoder buffers first */
+            if (caps.aptx_ll)      out = AudioCodec::AptxLL;
+            else if (caps.aptx)    out = AudioCodec::Aptx;
+            else if (caps.sbc)     out = AudioCodec::SBC;
+            else if (caps.aac)     out = AudioCodec::AAC;
+            else if (caps.lhdcv5)  out = AudioCodec::LHDCV5;
+            else if (caps.aptx_hd) out = AudioCodec::AptxHD;
+            else if (caps.ldac)    out = AudioCodec::LDAC;
+            else return false;
+            return true;
+        }
         if (caps.ldac)         out = AudioCodec::LDAC;
         else if (caps.aptx_hd) out = AudioCodec::AptxHD;
         else if (caps.aptx_ll) out = AudioCodec::AptxLL;

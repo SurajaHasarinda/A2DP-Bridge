@@ -264,6 +264,14 @@ void ProfileDialog::build_ui() {
     connect(bit_depth_, &QComboBox::currentIndexChanged, this, [this] { update_format_info(); });
     codec_form_->addRow(U("connection.bit_depth"), bit_depth_);
 
+    /* Latency mode (latency_mode.h), same order as kLatencyModes in on_save() */
+    latency_ = new QComboBox(codec_card);
+    latency_->setToolTip(U("tooltip.latency"));
+    latency_->addItem(U("latency.standard"));
+    latency_->addItem(U("latency.low"));
+    latency_->addItem(U("latency.lowest"));
+    codec_form_->addRow(U("profile.latency"), latency_);
+
     /* ---- Audio source ---- */
     root->addWidget(section_title(U("profile.section_audio"), body));
     root->addWidget(make_card(body, &audio_form_));
@@ -379,6 +387,7 @@ void ProfileDialog::populate_from_profile(const ConnectionProfile &p) {
     abr_->setChecked(p.abr);
     fallback_->setChecked(p.codec_fallback);
     max_packet_->setValue(p.max_media_payload);
+    latency_->setCurrentIndex(p.latency == "lowest" ? 2 : p.latency == "low" ? 1 : 0);
 
     const int sr_idx = (p.sample_rate == 44100) ? 1 : (p.sample_rate == 48000) ? 2
                      : (p.sample_rate == 88200) ? 3 : (p.sample_rate == 96000) ? 4 : 0;
@@ -777,6 +786,8 @@ void ProfileDialog::on_save() {
         p.volume_sync = vol_sel == 1 ? "off" : "auto";
     }
     p.max_media_payload = clamp_media_payload_limit(static_cast<uint32_t>(max_packet_->value()));
+    static const char *const kLatencyModes[] = {"standard", "low", "lowest"};
+    p.latency = kLatencyModes[latency_->currentIndex() < 0 ? 0 : latency_->currentIndex()];
 
     if (edit_index_ >= 0) backend_->profiles().update(edit_index_, p);
     else backend_->profiles().add(p);

@@ -21,8 +21,12 @@ inline QString radio_text(bool has_rssi, int rssi, int afh_in_use, const std::st
     return t.isEmpty() ? QStringLiteral("-") : t;
 }
 
+/* "Central, RSSI ..." - the AFH classification only applies when this PC is central */
 inline QString radio_text(const LinkRadio &r) {
-    return radio_text(r.has_rssi, r.rssi, r.afh_in_use, r.afh_usable >= 0 ? r.afh_avoided : std::string());
+    QString t = radio_text(r.has_rssi, r.rssi, r.afh_in_use, r.afh_usable >= 0 ? r.afh_avoided : std::string());
+    if (r.role < 0) return t;
+    const QString role = U(r.role == 0 ? "radio.central" : "radio.peripheral");
+    return t == QStringLiteral("-") ? role : role + U("radio.separator") + t;
 }
 
 #endif /* RADIO_TEXT_H */

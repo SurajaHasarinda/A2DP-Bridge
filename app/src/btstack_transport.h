@@ -229,6 +229,8 @@ public:
     /* Upper limit for get_media_mtu(), clamped to MEDIA_PAYLOAD_LIMIT_MIN..MAX.
      * Applies to streams established afterwards. */
     void set_media_payload_limit(uint32_t limit) { media_payload_limit_.store(clamp_media_payload_limit(limit)); }
+    /* Longest backlog of audio the send queue keeps, in ms (latency_mode.h) */
+    void set_max_queue_ms(uint32_t ms) { max_queue_ms_.store(ms); }
 
     /* Check if connected and stream is active */
     bool is_connected() const;
@@ -451,6 +453,8 @@ private:
     void *afh_timer_ = nullptr;          /* btstack_timer_source_t */
     uint8_t afh_sent_map_[10] = {};
     bool afh_sent_ = false;              /* a classification is in force at the controller */
+    int role_switch_requests_ = 0;       /* central role requested on this connection */
+    uint64_t last_send_ms_ = 0;          /* last media packet sent (BTstack thread), 0 = none yet */
     int afh_policy_version_seen_ = -1;
     int afh_ticks_ = 0;
     std::atomic<bool> stream_result_{false};
@@ -463,6 +467,7 @@ private:
     uint8_t remote_seid_ = 0;      /* Currently active remote SEID */
     uint16_t media_mtu_ = 0;
     std::atomic<uint16_t> media_payload_limit_{MEDIA_PAYLOAD_LIMIT_DEFAULT};
+    std::atomic<uint32_t> max_queue_ms_{200};
 
     /* Stream endpoint SEIDs */
     uint8_t ldac_local_seid_ = 0;
@@ -555,8 +560,6 @@ private:
         bool     no_rtp = false;   /* send without RTP header (aptX, aptX LL) */
     };
     static const int MEDIA_QUEUE_CAPACITY = static_cast<int>(MEDIA_QUEUE_PACKETS);
-    /* Longest backlog of audio in the queue (see send_media) */
-    static constexpr uint32_t MAX_QUEUE_MS = 200;
     MediaPacket media_queue_[MEDIA_QUEUE_CAPACITY];
     int media_queue_head_ = 0;   /* write position (WASAPI thread) */
     int media_queue_tail_ = 0;   /* read position (BTstack thread) */

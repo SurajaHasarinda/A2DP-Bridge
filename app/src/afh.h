@@ -4,12 +4,13 @@
  * Bluetooth BR/EDR hops over 79 channels (2402-2480 MHz). With Adaptive
  * Frequency Hopping the central's controller leaves out channels it finds
  * bad; the host may help with HCI Set AFH Host Channel Classification,
- * marking channels it knows to be busy. A2DPWB is the central of its links,
- * so what it passes applies to headphones and receivers alike.
+ * marking channels it knows to be busy. It applies only while A2DPWB is the
+ * central of the link, which BtStackTransport asks for (afh_tick).
  *
  * Policies:
  *   "auto"      Wi-Fi access points this PC hears strongly (WLAN API scan),
- *               their 2.4 GHz channels are marked bad
+ *               their 2.4 GHz channels are marked bad; the access point this
+ *               PC is connected to always, and first
  *   "off"       nothing is passed (the controller decides alone)
  *   "6,11"      these Wi-Fi channels are marked bad
  *
@@ -35,6 +36,7 @@ struct WifiAp {
     int channel = 0;        /* 2.4 GHz channel number, 1-14 */
     int rssi_dbm = -100;
     std::string ssid;
+    bool connected = false; /* the access point this PC is connected to */
 };
 
 struct AfhClassification {
