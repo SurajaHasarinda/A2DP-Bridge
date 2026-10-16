@@ -154,12 +154,17 @@ static void convert_f32_to_i32(const float *src, int32_t *dst, uint32_t n) {
 /* WASAPI callback — just copy raw PCM into the ring buffer.
  * All conversion, encoding, and sending happens in encode_thread_func. */
 static std::atomic<uint32_t> ring_overflow_count{0};
+static std::atomic<uint64_t> ring_overflow_frames{0};
 
 static void service_audio_callback(
     const uint8_t *data, uint32_t frames,
     uint32_t channels, uint32_t sample_rate, uint32_t bits_per_sample)
 {
     if (!g_ctx.running.load(std::memory_order_relaxed)) return;
+    /* Reconnecting: the encoder is detached and the ring is flushed once the
+     * link is back, so this audio could never be sent. Skip it instead of
+     * filling the ring and counting it as dropped at capture. */
+    if (!g_ctx.encoder.load(std::memory_order_acquire)) return;
     uint32_t byte_size = frames * channels * (bits_per_sample / 8);
     if (byte_size == 0) return;
 
@@ -171,6 +176,7 @@ static void service_audio_callback(
     stats.capture_frames.fetch_add(frames, std::memory_order_relaxed);
     if (g_ctx.ring.available_write() < byte_size) {
         ring_overflow_count.fetch_add(1, std::memory_order_relaxed);
+        ring_overflow_frames.fetch_add(frames, std::memory_order_relaxed);
         stats.capture_dropped_frames.fetch_add(frames, std::memory_order_relaxed);
         return;
     }
@@ -462,8 +468,13 @@ static DWORD WINAPI encode_thread_func(LPVOID) {
         if (now - log_tick >= 5000) {
             log_tick = now;
             uint32_t oflow = ring_overflow_count.exchange(0, std::memory_order_relaxed);
+            uint64_t oflow_frames = ring_overflow_frames.exchange(0, std::memory_order_relaxed);
             if (oflow > 0) {
-                fprintf(stderr, "encode_thread: ring overflow dropped %u callbacks in last 5s\n", oflow);
+                /* Timestamped, so a gap heard in a game can be matched to it */
+                const uint32_t rate = g_ctx.ring.sample_rate;
+                LOG_WARN("A2dpService: capture overflow, %.0f ms of audio dropped in the last 5 s "
+                         "(%u callbacks; the encoder fell behind)",
+                         rate ? 1000.0 * static_cast<double>(oflow_frames) / rate : 0.0, oflow);
                 fflush(stderr);
             }
         }
@@ -1603,8 +1614,18 @@ void A2dpService::streaming_thread_func_inner() {
     g_ctx.transport.store(transport);
     g_ctx.running.store(true);
 
-    /* Initialize ring buffer and encode thread */
-    g_ctx.ring.init(256 * 1024);
+    /* Initialize ring buffer and encode thread. The ring holds about one
+     * second of captured audio whatever the format: a fixed size held only
+     * 0.17 s of 7.1 float (common with games and gaming headsets), so a short
+     * stall of the encode thread overflowed it. Power of two, 256 KB at least. */
+    {
+        const uint64_t bytes_per_s = static_cast<uint64_t>(sr) * ch * (source_bits / 8);
+        uint32_t cap = 256 * 1024;
+        while (cap < bytes_per_s && cap < (64u << 20)) cap <<= 1;
+        g_ctx.ring.init(cap);
+        LOG_INFO("A2dpService: capture ring %u KB (%.2f s of audio)", cap / 1024,
+                 bytes_per_s ? static_cast<double>(cap) / bytes_per_s : 0.0);
+    }
     HANDLE encode_thread = CreateThread(nullptr, 0, encode_thread_func, nullptr, 0, nullptr);
     if (!encode_thread) {
         notify_state(State::Error, L("error.encode_thread"));
