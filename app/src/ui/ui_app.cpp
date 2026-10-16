@@ -13,10 +13,10 @@
 
 #include <QAbstractNativeEventFilter>
 #include <QAbstractScrollArea>
-#include <QAbstractSlider>
 #include <QAbstractSpinBox>
 #include <QApplication>
 #include <QComboBox>
+#include <QSlider>
 #include <QWheelEvent>
 #include <QFontDatabase>
 #include <QIcon>
@@ -40,11 +40,13 @@ class WheelGuard : public QObject {
 public:
     using QObject::QObject;
     bool eventFilter(QObject *obj, QEvent *event) override {
-        if (event->type() != QEvent::Wheel) return false;
+        if (event->type() != QEvent::Wheel || forwarding_) return false;
         auto *w = qobject_cast<QWidget *>(obj);
         if (!w) return false;
         const bool combo = qobject_cast<QComboBox *>(w) != nullptr;
-        const bool value_widget = qobject_cast<QAbstractSpinBox *>(w) || qobject_cast<QAbstractSlider *>(w);
+        /* QSlider, not QAbstractSlider: scroll bars are sliders too, and the scroll area
+         * hands its wheel events to them, so guarding them would bounce the event forever */
+        const bool value_widget = qobject_cast<QAbstractSpinBox *>(w) || qobject_cast<QSlider *>(w);
         if (!combo && !(value_widget && !w->hasFocus())) return false;
         /* Hand the scroll to the enclosing scroll area, if any */
         auto *we = static_cast<QWheelEvent *>(event);
@@ -53,12 +55,17 @@ public:
                 QWheelEvent fwd(area->viewport()->mapFromGlobal(we->globalPosition()), we->globalPosition(),
                                 we->pixelDelta(), we->angleDelta(), we->buttons(), we->modifiers(),
                                 we->phase(), we->inverted());
+                forwarding_ = true;
                 QCoreApplication::sendEvent(area->viewport(), &fwd);
+                forwarding_ = false;
                 break;
             }
         }
         return true;
     }
+
+private:
+    bool forwarding_ = false;
 };
 
 /* Brings the window forward when a second instance asks (see main.cpp) */
