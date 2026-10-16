@@ -230,7 +230,8 @@ public:
      * Applies to streams established afterwards. */
     void set_media_payload_limit(uint32_t limit) { media_payload_limit_.store(clamp_media_payload_limit(limit)); }
     /* Longest backlog of audio the send queue keeps, in ms (latency_mode.h) */
-    void set_max_queue_ms(uint32_t ms) { max_queue_ms_.store(ms); }
+    /* The limit adapts: it rises after drops (up to 2.5x) and returns after a calm (send_media) */
+    void set_max_queue_ms(uint32_t ms) { max_queue_ms_.store(ms); queue_limit_ms_ = ms; }
 
     /* Check if connected and stream is active */
     bool is_connected() const;
@@ -241,6 +242,8 @@ public:
 
     /* Get current queue depth (instantaneous packet count, for ABR TxQueueDepth) */
     uint32_t get_queue_depth() const;
+    /* Audio waiting in the send queue, in ms (oldest to newest packet's RTP timestamp) */
+    uint32_t queue_backlog_ms();
 
     /* Get the codec selected during connect (for auto-mode) */
     AudioCodec get_selected_codec() const;
@@ -274,6 +277,10 @@ public:
         uint8_t aptx_seid = 0;
         uint8_t sbc_seid = 0;
         uint8_t aac_seid = 0;
+        /* SBC: channel mode bitmap (0x04 = dual channel) and max bitpool
+         * the remote accepts, 0 = not reported */
+        uint8_t sbc_channel_modes = 0;
+        uint8_t sbc_max_bitpool = 0;
         /* Remote aptX-family capability byte 6 (freq bits high nibble:
          * 0x20=44.1k 0x10=48k; channel bits low: 0x02=stereo 0x01=mono).
          * 0 = not reported (assume 44.1k+48k). */
@@ -315,6 +322,11 @@ public:
      * `wanted` unchanged for other codecs or when no better choice exists.
      */
     uint32_t pick_aptx_sample_rate(AudioCodec codec, uint32_t wanted) const;
+    /* SBC XQ: ask configure_codec for dual channel at a high bitpool when the
+     * remote allows it; the outcome is what the SBC encoder must use */
+    void set_sbc_xq(bool on) { sbc_xq_wanted_ = on; }
+    bool sbc_dual_channel() const { return sbc_dual_; }
+    uint8_t sbc_max_bitpool() const { return sbc_max_bitpool_; }
 
     /*
      * For LHDC V5: choose a capture sample rate (44100 / 48000 / 96000 /
@@ -468,6 +480,13 @@ private:
     uint16_t media_mtu_ = 0;
     std::atomic<uint16_t> media_payload_limit_{MEDIA_PAYLOAD_LIMIT_DEFAULT};
     std::atomic<uint32_t> max_queue_ms_{200};
+    bool sbc_xq_wanted_ = false;
+    bool sbc_dual_ = false;           /* negotiated SBC: dual channel (XQ) */
+    uint8_t sbc_max_bitpool_ = 53;    /* negotiated SBC max bitpool */
+    /* Adaptive queue limit, under send_mutex_ (send_media) */
+    uint32_t queue_limit_ms_ = 200;
+    uint64_t queue_limit_changed_ms_ = 0;
+    uint64_t queue_limit_drop_ms_ = 0;
 
     /* Stream endpoint SEIDs */
     uint8_t ldac_local_seid_ = 0;

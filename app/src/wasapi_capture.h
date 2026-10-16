@@ -56,6 +56,8 @@ public:
     uint32_t get_sample_rate() const { return sample_rate_; }
     uint32_t get_channels() const { return channels_; }
     uint32_t get_bits_per_sample() const { return bits_per_sample_; }
+    /* SPEAKER_* bits of the channels, in channel order (0 = not given) */
+    uint32_t get_channel_mask() const { return channel_mask_; }
 
 private:
     static DWORD WINAPI capture_thread_proc(LPVOID param);
@@ -65,6 +67,7 @@ private:
     uint32_t sample_rate_ = 0;
     uint32_t channels_ = 0;
     uint32_t bits_per_sample_ = 0;
+    uint32_t channel_mask_ = 0;
     std::atomic<bool> running_{false};
 
     /* COM interfaces */

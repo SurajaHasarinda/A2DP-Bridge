@@ -12,6 +12,7 @@
 #include <cstring>
 #include <windows.h>
 #include <avrt.h>
+#include <algorithm>
 
 /* BTstack headers (C) — must come before our avdtp.h to avoid include guard collision */
 extern "C" {
@@ -2054,12 +2055,25 @@ bool BtStackTransport::configure_codec(AudioCodec codec, uint32_t sample_rate, u
     if (codec == AudioCodec::SBC) {
         memset(&req.sbc_config, 0, sizeof(req.sbc_config));
         req.sbc_config.sampling_frequency = static_cast<uint16_t>(sample_rate);
-        req.sbc_config.channel_mode = (channels == 1) ? AVDTP_CHANNEL_MODE_MONO : AVDTP_CHANNEL_MODE_JOINT_STEREO;
+        /* Never above the remote's max bitpool (it was always 53 before).
+         * SBC XQ: dual channel when the remote offers it and its max bitpool
+         * fits the XQ bitpool (47 at 44.1 kHz, 44 at 48 kHz), else joint stereo. */
+        const uint8_t remote_max = remote_caps_.sbc_max_bitpool ? remote_caps_.sbc_max_bitpool : 53;
+        const uint8_t xq_bitpool = sample_rate == 48000 ? 44 : 47;
+        sbc_dual_ = sbc_xq_wanted_ && channels == 2 && (remote_caps_.sbc_channel_modes & AVDTP_SBC_DUAL_CHANNEL) &&
+                    remote_max >= xq_bitpool;
+        sbc_max_bitpool_ = remote_max < 53 ? remote_max : 53;
+        if (sbc_xq_wanted_ && !sbc_dual_)
+            fprintf(stderr, "BTstack: SBC XQ not possible (remote channel modes 0x%02X, max bitpool %u), "
+                    "using joint stereo\n", remote_caps_.sbc_channel_modes, remote_max);
+        req.sbc_config.channel_mode = (channels == 1) ? AVDTP_CHANNEL_MODE_MONO
+                                    : sbc_dual_       ? AVDTP_CHANNEL_MODE_DUAL_CHANNEL
+                                                      : AVDTP_CHANNEL_MODE_JOINT_STEREO;
         req.sbc_config.block_length = AVDTP_SBC_BLOCK_LENGTH_16;
         req.sbc_config.subbands = AVDTP_SBC_SUBBANDS_8;
         req.sbc_config.allocation_method = AVDTP_SBC_ALLOCATION_METHOD_LOUDNESS;
         req.sbc_config.min_bitpool_value = 2;
-        req.sbc_config.max_bitpool_value = 53;
+        req.sbc_config.max_bitpool_value = sbc_max_bitpool_;
     } else if (codec == AudioCodec::AAC) {
         memset(&req.aac_config, 0, sizeof(req.aac_config));
         req.aac_config.object_type = AVDTP_AAC_MPEG2_LC;
@@ -2435,13 +2449,37 @@ bool BtStackTransport::send_media(const uint8_t *data, uint32_t size,
          * stalls (interference, the earbuds busy with another device) the
          * queued audio would go out in one burst and play back fast to catch
          * up. Measured with the RTP timestamps (samples); older packets beyond
-         * the latency mode's limit are dropped, so playback resumes at live audio. */
-        const uint32_t max_backlog = sample_rate_ / 1000u * max_queue_ms_.load();
+         * the limit are dropped, so playback resumes at live audio.
+         *
+         * The limit adapts to the link: starting at the latency mode's value,
+         * it rises by half after drops (at most once a second, up to 2.5x),
+         * so a link with frequent short stalls gets more cushion instead of
+         * skipping again and again; after 30 s without drops it steps back. */
+        const uint64_t now_ms = GetTickCount64();
+        const uint32_t base_ms = max_queue_ms_.load();
+        if (queue_limit_ms_ > base_ms && now_ms - queue_limit_drop_ms_ >= 30000 &&
+            now_ms - queue_limit_changed_ms_ >= 30000) {
+            queue_limit_ms_ = std::max(base_ms, queue_limit_ms_ * 2 / 3);
+            queue_limit_changed_ms_ = now_ms;
+            fprintf(stderr, "BTstack: link calm, send queue limit back to %u ms\n", queue_limit_ms_);
+        }
+        const uint32_t max_backlog = sample_rate_ / 1000u * queue_limit_ms_;
+        bool dropped = false;
         while (max_backlog > 0 && depth > 1 &&
                timestamp - media_queue_[media_queue_tail_].timestamp > max_backlog) {
             media_queue_tail_ = (media_queue_tail_ + 1) % MEDIA_QUEUE_CAPACITY;
             depth = media_queue_count_.fetch_sub(1) - 1;
             link_stats().queue_drops.fetch_add(1, std::memory_order_relaxed);
+            dropped = true;
+        }
+        if (dropped) {
+            queue_limit_drop_ms_ = now_ms;
+            const uint32_t cap_ms = base_ms * 5 / 2;
+            if (queue_limit_ms_ < cap_ms && now_ms - queue_limit_changed_ms_ >= 1000) {
+                queue_limit_ms_ = std::min(cap_ms, queue_limit_ms_ * 3 / 2);
+                queue_limit_changed_ms_ = now_ms;
+                fprintf(stderr, "BTstack: send queue limit raised to %u ms after drops\n", queue_limit_ms_);
+            }
         }
         link_stats().queue_depth.store(static_cast<uint32_t>(depth), std::memory_order_relaxed);
     }
@@ -2482,6 +2520,15 @@ bool BtStackTransport::is_streaming() const {
 
 uint32_t BtStackTransport::get_and_reset_send_failure_count() {
     return send_failure_count_.exchange(0);
+}
+
+uint32_t BtStackTransport::queue_backlog_ms() {
+    std::lock_guard<std::mutex> lock(send_mutex_);
+    const int n = media_queue_count_.load();
+    if (n < 2 || sample_rate_ == 0) return 0;
+    const int newest = (media_queue_head_ + MEDIA_QUEUE_CAPACITY - 1) % MEDIA_QUEUE_CAPACITY;
+    const uint32_t samples = media_queue_[newest].timestamp - media_queue_[media_queue_tail_].timestamp;
+    return static_cast<uint32_t>(static_cast<uint64_t>(samples) * 1000u / sample_rate_);
 }
 
 uint32_t BtStackTransport::get_queue_depth() const {
@@ -2901,7 +2948,12 @@ void BtStackTransport::handle_a2dp_event(uint8_t *packet, uint16_t size) {
             a2dp_subevent_signaling_media_codec_sbc_capability_get_remote_seid(packet);
         remote_caps_.sbc = true;
         remote_caps_.sbc_seid = remote_seid;
-        fprintf(stderr, "BTstack: Remote supports SBC (SEID=%u)\n", remote_seid);
+        remote_caps_.sbc_channel_modes =
+            a2dp_subevent_signaling_media_codec_sbc_capability_get_channel_mode_bitmap(packet);
+        remote_caps_.sbc_max_bitpool =
+            a2dp_subevent_signaling_media_codec_sbc_capability_get_max_bitpool_value(packet);
+        fprintf(stderr, "BTstack: Remote supports SBC (SEID=%u, channel modes 0x%02X, max bitpool %u)\n",
+                remote_seid, remote_caps_.sbc_channel_modes, remote_caps_.sbc_max_bitpool);
         break;
     }
 

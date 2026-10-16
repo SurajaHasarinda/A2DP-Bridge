@@ -142,7 +142,9 @@ def run_codec(args, codec, port):
                      '-c', codec, '--test-tone', '--duration', str(args.duration),
                      '--hci-capture', src_capture]
                     + (['--max-packet', str(args.max_packet)] if args.max_packet else [])
-                    + (['--latency', args.latency] if args.latency else []),
+                    + (['--latency', args.latency] if args.latency else [])
+                    + (['--sbc-xq'] if args.sbc_xq else [])
+                    + (['-a'] if args.abr else []),
                     stdout=log, stderr=subprocess.STDOUT, env=env, timeout=args.duration + 90).returncode
             except subprocess.TimeoutExpired:
                 rc = 'timeout'
@@ -199,6 +201,8 @@ def main():
     parser.add_argument('--max-packet', type=int, help='passed to A2DPWB --max-packet (default: its own)')
     parser.add_argument('--latency', choices=['standard', 'low', 'lowest'],
                         help='passed to A2DPWB --latency (default: its own)')
+    parser.add_argument('--sbc-xq', action='store_true', help='passed to A2DPWB --sbc-xq')
+    parser.add_argument('--abr', action='store_true', help='passed to A2DPWB -a (ABR)')
     parser.add_argument('--build-dir', default=os.path.join(REPO, 'build'))
     parser.add_argument('--config', default='Release', help='build configuration (Release / Debug)')
     parser.add_argument('--out', default=os.path.join(HERE, 'out'))

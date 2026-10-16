@@ -268,7 +268,8 @@ endif()
 add_subdirectory(app)
 
 # --- Developer tools (not part of the release package) ---
-option(A2DPWB_BUILD_TOOLS "Build developer tools (a2dpwb_decode)" ON)
+option(A2DPWB_BUILD_TOOLS "Build developer tools (a2dpwb_decode, a2dpwb_dsp_test)" ON)
 if(A2DPWB_BUILD_TOOLS)
     add_subdirectory(tools/a2dp_decode)
+    add_subdirectory(tools/dsp_test)
 endif()

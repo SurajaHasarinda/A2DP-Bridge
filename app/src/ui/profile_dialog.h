@@ -65,6 +65,7 @@ private:
     QCheckBox *fallback_ = nullptr;
     QComboBox *quality_ = nullptr;
     QCheckBox *abr_ = nullptr;
+    QCheckBox *sbc_xq_ = nullptr;
     QComboBox *sample_rate_ = nullptr;
     QComboBox *bit_depth_ = nullptr;
     QComboBox *latency_ = nullptr;

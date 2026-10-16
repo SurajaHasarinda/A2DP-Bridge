@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
 
+#include "abr_controller.h"
+#include "audio_dsp.h"
 #include "latency_mode.h"
 #include "a2dp_service.h"
 #include "audio_device_enum.h"
@@ -124,6 +126,9 @@ struct StreamingContext {
     int                             bytes_per_sample = 2;
     int                             capture_mode = 0;
     uint32_t                        max_packet_ms = 0; /* audio per packet, 0 = size limit only */
+    uint32_t                        channel_mask = 0;  /* capture speaker layout (audio_dsp.h) */
+    uint32_t                        dither_state = 0;  /* float_to_int16 noise generator */
+    StepAbr                         step_abr;          /* AAC / SBC bitrate steps */
 
     std::vector<uint8_t>            pcm_buffer;
     std::vector<uint8_t>            encode_buffer;
@@ -132,24 +137,6 @@ struct StreamingContext {
 };
 
 static StreamingContext g_ctx;
-
-static void convert_f32_to_i16(const float *src, int16_t *dst, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++) {
-        float s = src[i];
-        if (s > 1.0f) s = 1.0f;
-        if (s < -1.0f) s = -1.0f;
-        dst[i] = static_cast<int16_t>(s * 32767.0f);
-    }
-}
-
-static void convert_f32_to_i32(const float *src, int32_t *dst, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++) {
-        float s = src[i];
-        if (s > 1.0f) s = 1.0f;
-        if (s < -1.0f) s = -1.0f;
-        dst[i] = static_cast<int32_t>(static_cast<double>(s) * 2147483647.0);
-    }
-}
 
 /* WASAPI callback — just copy raw PCM into the ring buffer.
  * All conversion, encoding, and sending happens in encode_thread_func. */
@@ -228,9 +215,11 @@ static DWORD WINAPI encode_thread_func(LPVOID) {
 
     std::vector<uint8_t> read_buf;
     std::vector<uint8_t> downmixed_buf;
+    std::vector<float> float_mix;
     std::vector<uint8_t> combined;
     uint8_t accum[2048];
     uint32_t abr_last_tick = 0;
+    uint64_t step_abr_tick = 0;
     uint32_t log_tick = 0;
 
     while (g_ctx.running.load(std::memory_order_relaxed)) {
@@ -277,18 +266,25 @@ static DWORD WINAPI encode_thread_func(LPVOID) {
 
             const uint8_t *pcm_data;
             if (bits_per_sample == 32) {
+                /* Float capture: downmix surround to stereo in float (centre
+                 * = game dialogue, surrounds, LFE mixed in, not dropped), then
+                 * convert with soft clipping (and dither for 16-bit) */
+                const float *fsrc = reinterpret_cast<const float *>(read_buf.data());
+                if (channels > use_channels && use_channels == 2) {
+                    float_mix.resize(static_cast<size_t>(frames) * 2);
+                    downmix_to_stereo(fsrc, frames, channels, g_ctx.channel_mask, float_mix.data());
+                    fsrc = float_mix.data();
+                    channels = 2;
+                    total_samples = frames * 2;
+                }
                 uint32_t buf_bytes = total_samples * static_cast<uint32_t>(bps);
                 if (g_ctx.pcm_buffer.size() < buf_bytes)
                     g_ctx.pcm_buffer.resize(buf_bytes);
-                if (bps == 4) {
-                    convert_f32_to_i32(reinterpret_cast<const float *>(read_buf.data()),
-                                       reinterpret_cast<int32_t *>(g_ctx.pcm_buffer.data()),
-                                       total_samples);
-                } else {
-                    convert_f32_to_i16(reinterpret_cast<const float *>(read_buf.data()),
-                                       reinterpret_cast<int16_t *>(g_ctx.pcm_buffer.data()),
-                                       total_samples);
-                }
+                if (bps == 4)
+                    float_to_int32(fsrc, reinterpret_cast<int32_t *>(g_ctx.pcm_buffer.data()), total_samples);
+                else
+                    float_to_int16(fsrc, reinterpret_cast<int16_t *>(g_ctx.pcm_buffer.data()), total_samples,
+                                   g_ctx.dither_state);
                 pcm_data = g_ctx.pcm_buffer.data();
             } else if (bits_per_sample == 16 && bps == 2) {
                 pcm_data = read_buf.data();
@@ -306,7 +302,7 @@ static DWORD WINAPI encode_thread_func(LPVOID) {
                 break;
             }
 
-            /* Downmix if needed */
+            /* Integer capture (rare): keep the first channels */
             if (channels > use_channels) {
                 uint32_t dm_bytes = frames * use_channels * static_cast<uint32_t>(bps);
                 downmixed_buf.resize(dm_bytes);
@@ -447,6 +443,23 @@ static DWORD WINAPI encode_thread_func(LPVOID) {
                 LhdcV5Encoder *lhdc = static_cast<LhdcV5Encoder *>(encoder);
                 if (lhdc->is_abr_enabled()) {
                     for (uint32_t i = 0; i < sent_packets; i++) lhdc->abr_adjust(queue_before);
+                }
+            }
+            /* AAC / SBC ABR: step the bitrate down when the send queue backs
+             * up, back up after a long calm (abr_controller.h) */
+            if (g_ctx.abr_enabled && encoder->abr_step_count() > 1) {
+                const uint64_t now64 = GetTickCount64();
+                if (now64 - step_abr_tick >= 100) {
+                    step_abr_tick = now64;
+                    const int before = g_ctx.step_abr.step();
+                    const int step = g_ctx.step_abr.update(transport->queue_backlog_ms(),
+                                                           link_stats().queue_drops.load(std::memory_order_relaxed),
+                                                           now64);
+                    if (step != before) {
+                        encoder->set_abr_step(step);
+                        LOG_INFO("A2dpService: ABR %s to %u kbps", step > before ? "down" : "up",
+                                 encoder->get_bitrate_kbps());
+                    }
                 }
             }
 
@@ -917,6 +930,9 @@ BtStackTransport *A2dpService::restart_btstack(const char *why) {
         return nullptr;
     }
     transport_->set_media_payload_limit(active_profile_.max_media_payload);
+    /* A new stack knows nothing of the profile: same queue limit and SBC mode as before */
+    transport_->set_max_queue_ms(latency_mode(active_profile_.latency).max_queue_ms);
+    transport_->set_sbc_xq(active_profile_.sbc_xq);
     return transport_.get();
 }
 
@@ -1159,6 +1175,7 @@ void A2dpService::streaming_thread_func_inner() {
     transport->set_media_payload_limit(p.max_media_payload);
     const LatencyMode latency = latency_mode(p.latency);
     transport->set_max_queue_ms(latency.max_queue_ms);
+    transport->set_sbc_xq(p.sbc_xq);
     g_ctx.max_packet_ms = latency.max_packet_ms;
 
     if (stop_requested_.load()) { running_.store(false); notify_state(State::Idle, L("status.ready")); return; }
@@ -1554,6 +1571,8 @@ void A2dpService::streaming_thread_func_inner() {
     LOG_INFO("A2dpService: encoder config: bit_depth_index=%d use_24bit=%d mtu=%u",
              bit_depth_index, use_24bit, media_mtu);
 
+    if (selected_codec == AudioCodec::SBC)  /* negotiated channel mode and max bitpool */
+        static_cast<SbcEncoder *>(encoder.get())->set_link(transport->sbc_dual_channel(), transport->sbc_max_bitpool());
     if (!encoder->init(media_mtu, quality, sr, use_ch)) {
         notify_state(State::Error, L("error.encoder_init"));
         transport->disconnect();
@@ -1563,12 +1582,15 @@ void A2dpService::streaming_thread_func_inner() {
 
     g_ctx.bytes_per_sample = use_24bit ? 4 : 2;
 
-    bool abr = p.abr && (selected_codec == AudioCodec::LDAC || selected_codec == AudioCodec::LHDCV5);
+    bool abr = p.abr && (selected_codec == AudioCodec::LDAC || selected_codec == AudioCodec::LHDCV5 ||
+                         encoder->abr_step_count() > 1);
     if (abr && selected_codec == AudioCodec::LDAC) {
         LdacEncoder *ldac = static_cast<LdacEncoder *>(encoder.get());
         if (!ldac->init_abr(100)) abr = false;
     }
     g_ctx.abr_enabled = abr;
+    g_ctx.step_abr.reset(encoder->abr_step_count(), latency.max_queue_ms,
+                         link_stats().queue_drops.load(std::memory_order_relaxed), GetTickCount64());
 
     LOG_INFO("A2dpService: encoder initialized, bitrate=%u kbps, abr=%d",
              encoder->get_bitrate_kbps(), abr);
@@ -1610,6 +1632,9 @@ void A2dpService::streaming_thread_func_inner() {
     /* Start audio pipeline */
     g_ctx.timestamp = 0;
     g_ctx.pcm_residual.clear();
+    /* Speaker layout for the surround downmix; app capture and the test tone are stereo */
+    g_ctx.channel_mask = (app_mode || p.test_tone) ? 0 : wasapi_capture.get_channel_mask();
+    g_ctx.dither_state = 0;
     g_ctx.encoder.store(encoder.get());
     g_ctx.transport.store(transport);
     g_ctx.running.store(true);

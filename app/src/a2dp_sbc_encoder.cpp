@@ -25,8 +25,19 @@ extern "C" {
 static constexpr uint8_t SBC_NUM_BLOCKS   = 16;
 static constexpr uint8_t SBC_NUM_SUBBANDS = 8;
 
-/* Quality -> bitpool mapping (Joint Stereo) */
-static uint8_t quality_to_bitpool(EncoderQuality q) {
+/* Quality -> bitpool. Joint stereo: 53 / 35 / 19 (about 328 / 229 / 127 kbps
+ * at 44.1 kHz). Dual channel (SBC XQ, the bitpool counts per channel): 47 at
+ * 44.1 kHz / 44 at 48 kHz (about 552 / 564 kbps, as Android and PipeWire),
+ * then 31 / 17. */
+static uint8_t quality_to_bitpool(EncoderQuality q, bool dual, uint32_t sample_rate) {
+    if (dual) {
+        switch (q) {
+        case EncoderQuality::High:     return sample_rate == 48000 ? 44 : 47;
+        case EncoderQuality::Standard: return 31;
+        case EncoderQuality::Mobile:   return 17;
+        }
+        return 31;
+    }
     switch (q) {
     case EncoderQuality::High:     return 53;
     case EncoderQuality::Standard: return 35;
@@ -58,7 +69,9 @@ bool SbcEncoder::init(uint16_t mtu, EncoderQuality quality,
         return false;
     }
 
-    bitpool_ = quality_to_bitpool(quality);
+    bitpool_ = quality_to_bitpool(quality, dual_channel_ && channels == 2, sample_rate);
+    if (bitpool_ > max_bitpool_) bitpool_ = max_bitpool_;
+    if (channels != 2) dual_channel_ = false;
 
     /* Allocate and initialize the Bluedroid SBC encoder */
     auto *state = static_cast<btstack_sbc_encoder_bluedroid_t *>(
@@ -78,9 +91,9 @@ bool SbcEncoder::init(uint16_t mtu, EncoderQuality quality,
     }
     sbc_instance_ = inst;
 
-    btstack_sbc_channel_mode_t ch_mode = (channels == 1)
-        ? SBC_CHANNEL_MODE_MONO
-        : SBC_CHANNEL_MODE_JOINT_STEREO;
+    btstack_sbc_channel_mode_t ch_mode = (channels == 1) ? SBC_CHANNEL_MODE_MONO
+                                       : dual_channel_   ? SBC_CHANNEL_MODE_DUAL_CHANNEL
+                                                         : SBC_CHANNEL_MODE_JOINT_STEREO;
 
     uint8_t status = inst->configure(
         state, SBC_MODE_STANDARD,
@@ -100,26 +113,16 @@ bool SbcEncoder::init(uint16_t mtu, EncoderQuality quality,
     pcm_frames_per_sbc_frame_ = inst->num_audio_frames(state);
     sbc_frame_length_ = inst->sbc_buffer_length(state);
 
-    /*
-     * Bluedroid SBC encoder only populates u16PacketLength after the first
-     * SBC_Encoder() call, so sbc_buffer_length() returns 0 here.
-     * Calculate the frame length from the SBC spec (A2DP v1.3, Section 12.9):
-     *   Joint Stereo: 4 + 4*subbands*ch/8 + ceil((subbands + blocks*bitpool) / 8)
-     *   Mono/Dual:    4 + 4*subbands*ch/8 + ceil((blocks * ch * bitpool) / 8)
-     *   Stereo:       4 + 4*subbands*ch/8 + ceil((blocks * bitpool) / 8)
-     */
-    if (sbc_frame_length_ == 0) {
-        uint32_t header = 4 + (4u * SBC_NUM_SUBBANDS * channels) / 8;
-        uint32_t data_bits;
-        if (channels == 2) {
-            /* Joint Stereo */
-            data_bits = SBC_NUM_SUBBANDS + (uint32_t)SBC_NUM_BLOCKS * bitpool_;
-        } else {
-            /* Mono */
-            data_bits = (uint32_t)SBC_NUM_BLOCKS * channels * bitpool_;
-        }
-        sbc_frame_length_ = header + (data_bits + 7) / 8;
-    }
+    /* Bluedroid fills in the frame length only after the first encode */
+    channels_ = channels;
+    if (sbc_frame_length_ == 0) sbc_frame_length_ = frame_length(bitpool_);
+
+    /* ABR steps: the configured bitpool, then lower ones (35 / 19 joint, 31 / 17 dual) */
+    abr_bitpools_[0] = bitpool_;
+    abr_step_count_ = 1;
+    static const uint8_t joint_steps[] = {35, 19}, dual_steps[] = {31, 17};
+    for (uint8_t bp : dual_channel_ ? dual_steps : joint_steps)
+        if (bp < abr_bitpools_[abr_step_count_ - 1]) abr_bitpools_[abr_step_count_++] = bp;
 
     mtu_ = mtu;
     sample_rate_ = sample_rate;
@@ -210,6 +213,27 @@ uint32_t SbcEncoder::get_pcm_frames_per_encode() const {
      * With 16 blocks x 8 subbands = 128 audio frames per SBC frame.
      */
     return pcm_frames_per_sbc_frame_;
+}
+
+/* SBC frame length from the specification (A2DP v1.3, section 12.9):
+ *   Joint Stereo: 4 + 4*subbands*ch/8 + ceil((subbands + blocks*bitpool) / 8)
+ *   Mono / Dual:  4 + 4*subbands*ch/8 + ceil((blocks * ch * bitpool) / 8) */
+uint16_t SbcEncoder::frame_length(uint8_t bitpool) const {
+    const uint32_t header = 4 + (4u * SBC_NUM_SUBBANDS * channels_) / 8;
+    const uint32_t data_bits = (channels_ == 2 && !dual_channel_)
+        ? SBC_NUM_SUBBANDS + static_cast<uint32_t>(SBC_NUM_BLOCKS) * bitpool
+        : static_cast<uint32_t>(SBC_NUM_BLOCKS) * channels_ * bitpool;
+    return static_cast<uint16_t>(header + (data_bits + 7) / 8);
+}
+
+void SbcEncoder::set_abr_step(int step) {
+    if (!initialized_ || step < 0 || step >= abr_step_count_) return;
+    const uint8_t bp = abr_bitpools_[step];
+    if (bp == bitpool_) return;
+    /* The Bluedroid encoder reads the bitpool for every frame: no reset, no click */
+    static_cast<btstack_sbc_encoder_bluedroid_t *>(sbc_state_)->params.s16BitPool = bp;
+    bitpool_ = bp;
+    sbc_frame_length_ = frame_length(bp);  /* frames per packet are sized from it */
 }
 
 uint32_t SbcEncoder::get_bitrate_kbps() const {

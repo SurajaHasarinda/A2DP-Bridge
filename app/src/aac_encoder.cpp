@@ -104,6 +104,13 @@ bool AacEncoder::init(uint16_t mtu, EncoderQuality quality,
         return false;
     }
 
+    /* ABR steps: the configured bitrate, then 192 and 128 kbps below it */
+    abr_bitrates_[0] = bitrate_;
+    abr_step_count_ = 1;
+    static const uint32_t lower_rates[] = {192000u, 128000u};
+    for (uint32_t r : lower_rates)
+        if (r < abr_bitrates_[abr_step_count_ - 1]) abr_bitrates_[abr_step_count_++] = r;
+
     frame_length_ = info.frameLength;
     max_out_size_ = info.maxOutBufBytes;
 
@@ -186,6 +193,16 @@ uint32_t AacEncoder::get_pcm_frames_per_encode() const {
 
 uint32_t AacEncoder::get_bitrate_kbps() const {
     return bitrate_ / 1000;
+}
+
+void AacEncoder::set_abr_step(int step) {
+    if (!initialized_ || step < 0 || step >= abr_step_count_) return;
+    const uint32_t rate = abr_bitrates_[step];
+    if (rate == bitrate_) return;
+    /* fdk-aac re-reads its configuration on the next frame and keeps the
+     * coder state, so the switch is seamless */
+    if (aacEncoder_SetParam(static_cast<HANDLE_AACENCODER>(aac_enc_), AACENC_BITRATE, rate) == AACENC_OK)
+        bitrate_ = rate;
 }
 
 void AacEncoder::shutdown() {

@@ -139,6 +139,7 @@ bool WasapiCapture::init(uint32_t preferred_sample_rate, const wchar_t *device_i
     bits_per_sample_ = mix_format->wBitsPerSample;
     if (mix_format->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
         WAVEFORMATEXTENSIBLE *ext = reinterpret_cast<WAVEFORMATEXTENSIBLE *>(mix_format);
+        channel_mask_ = ext->dwChannelMask;
         uint32_t valid_bits = ext->Samples.wValidBitsPerSample;
         if (valid_bits != 0 && valid_bits != bits_per_sample_) {
             fprintf(stderr, "WasapiCapture: Note: valid bits (%u) != container bits (%u)\n",
@@ -405,6 +406,7 @@ bool WasapiCapture::init_process(DWORD process_id, uint32_t sample_rate) {
     sample_rate_ = sample_rate;
     channels_ = 2;
     bits_per_sample_ = 32;
+    channel_mask_ = 0x3;  /* front left, front right */
     fprintf(stderr, "WasapiCapture: Capturing process %lu (and its child processes), "
             "%u Hz, 2 ch, 32-bit float\n", process_id, sample_rate_);
     return true;

@@ -44,6 +44,7 @@ struct ConnectionProfile {
                                    * (test_tone.h) instead of captured audio */
     uint16_t max_media_payload = MEDIA_PAYLOAD_LIMIT_DEFAULT; /* max media packet size (media_payload_limit.h) */
     std::string latency = "standard"; /* "standard", "low", "lowest" (latency_mode.h) */
+    bool sbc_xq = false;          /* SBC: dual channel at a high bitpool (~550 kbps) when the headphones allow it */
 };
 
 class ProfileManager {

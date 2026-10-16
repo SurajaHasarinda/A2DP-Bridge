@@ -30,6 +30,7 @@ add_executable(A2DPWB WIN32
     src/btstack_link_key_db_file.c
     src/config_path.cpp
     src/a2dp_service.cpp
+    src/audio_dsp.cpp
     src/volume_sync.cpp
     src/ui/backend.cpp
     src/ui/theme.cpp

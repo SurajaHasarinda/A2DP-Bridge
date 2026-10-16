@@ -254,6 +254,10 @@ void ProfileDialog::build_ui() {
     abr_->setToolTip(U("tooltip.abr"));
     codec_form_->addRow(QString(), abr_);
 
+    sbc_xq_ = new QCheckBox(U("connection.sbc_xq"), codec_card);
+    sbc_xq_->setToolTip(U("tooltip.sbc_xq"));
+    codec_form_->addRow(QString(), sbc_xq_);
+
     sample_rate_ = new QComboBox(codec_card);
     sample_rate_->setToolTip(U("tooltip.sample_rate"));
     connect(sample_rate_, &QComboBox::currentIndexChanged, this, [this] { update_format_info(); });
@@ -385,6 +389,7 @@ void ProfileDialog::populate_from_profile(const ConnectionProfile &p) {
     codec_->setCurrentIndex(ProfileManager::codec_to_index(p.codec));
     pending_quality_ = p.quality; /* selected by update_codec_dependent below */
     abr_->setChecked(p.abr);
+    sbc_xq_->setChecked(p.sbc_xq);
     fallback_->setChecked(p.codec_fallback);
     max_packet_->setValue(p.max_media_payload);
     latency_->setCurrentIndex(p.latency == "lowest" ? 2 : p.latency == "low" ? 1 : 0);
@@ -440,7 +445,8 @@ void ProfileDialog::update_codec_dependent() {
     const int codec_idx = codec_->currentIndex();
     const bool is_ldac = codec_idx == 1, is_lhdc = codec_idx == 7;
     const bool quality_enabled = codec_idx == 0 || codec_idx == 1 || codec_idx == 5 || codec_idx == 6 || is_lhdc;
-    const bool abr_enabled = codec_idx == 0 || codec_idx == 1 || is_lhdc;
+    /* ABR: LDAC and LHDC V5 natively, AAC and SBC with bitrate steps */
+    const bool abr_enabled = codec_idx == 0 || codec_idx == 1 || codec_idx == 5 || codec_idx == 6 || is_lhdc;
 
     /* Quality items with the codec's bitrates */
     const std::string cur_key = pending_quality_.empty() ? selected_quality() : pending_quality_;
@@ -472,6 +478,9 @@ void ProfileDialog::update_codec_dependent() {
     /* Codecs without ABR: hide the row instead of greying it out */
     set_row_visible(abr_, abr_enabled);
     if (!abr_enabled) abr_->setChecked(false);
+    const bool sbc_possible = codec_idx == 0 || codec_idx == 5;  /* Auto may pick SBC */
+    set_row_visible(sbc_xq_, sbc_possible);
+    if (!sbc_possible) sbc_xq_->setChecked(false);
     /* Auto already takes the best codec the device offers */
     fallback_->setEnabled(codec_idx != 0);
 
@@ -746,6 +755,7 @@ void ProfileDialog::on_save() {
     p.codec = ProfileManager::index_to_codec(ci);
     p.quality = selected_quality();
     p.abr = abr_->isChecked();
+    p.sbc_xq = sbc_xq_->isChecked();
     p.codec_fallback = fallback_->isChecked();
 
     const int sr_sel = sample_rate_->currentIndex();

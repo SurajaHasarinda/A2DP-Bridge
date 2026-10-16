@@ -78,6 +78,12 @@ public:
     /* Get the current bitrate in kbps */
     virtual uint32_t get_bitrate_kbps() const = 0;
 
+    /* Stepped ABR (AAC, SBC; abr_controller.h): number of bitrate steps,
+     * 0 = the configured quality, each next one lower. Called on the encode
+     * thread between encode() calls; the change is seamless. 1 = no ABR. */
+    virtual int abr_step_count() const { return 1; }
+    virtual void set_abr_step(int step) { (void)step; }
+
     virtual void shutdown() = 0;
 };
 

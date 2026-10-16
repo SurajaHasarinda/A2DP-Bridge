@@ -33,6 +33,13 @@ public:
 
     uint32_t get_pcm_frames_per_encode() const override;
     uint32_t get_bitrate_kbps() const override;
+    int abr_step_count() const override { return abr_step_count_; }
+    void set_abr_step(int step) override;
+
+    /* Before init(): what the link negotiated. dual_channel = SBC XQ (dual
+     * channel at a high bitpool, about 550 kbps); max_bitpool = the
+     * headphones' limit, never exceeded. */
+    void set_link(bool dual_channel, uint8_t max_bitpool) { dual_channel_ = dual_channel; max_bitpool_ = max_bitpool; }
 
     void shutdown() override;
 
@@ -44,6 +51,12 @@ private:
     uint32_t sample_rate_ = 0;
     uint32_t channels_ = 0;
     uint8_t bitpool_ = 53;
+    bool dual_channel_ = false;
+    uint8_t max_bitpool_ = 53;
+    uint8_t abr_bitpools_[3] = {};  /* configured bitpool, then lower ones */
+    int abr_step_count_ = 1;
+
+    uint16_t frame_length(uint8_t bitpool) const;
     uint16_t sbc_frame_length_ = 0;
     uint16_t pcm_frames_per_sbc_frame_ = 0;
 };

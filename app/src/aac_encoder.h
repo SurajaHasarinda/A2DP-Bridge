@@ -33,6 +33,8 @@ public:
 
     uint32_t get_pcm_frames_per_encode() const override;
     uint32_t get_bitrate_kbps() const override;
+    int abr_step_count() const override { return abr_step_count_; }
+    void set_abr_step(int step) override;
 
     void shutdown() override;
 
@@ -43,6 +45,8 @@ private:
     uint32_t sample_rate_ = 0;
     uint32_t channels_ = 0;
     uint32_t bitrate_ = 0;
+    uint32_t abr_bitrates_[3] = {};  /* configured bitrate, then 192 and 128 kbps when lower */
+    int abr_step_count_ = 1;
     uint32_t frame_length_ = 0; /* PCM frames per AAC frame (typically 1024) */
     uint32_t max_out_size_ = 0;
 };

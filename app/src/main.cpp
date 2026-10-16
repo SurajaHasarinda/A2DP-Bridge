@@ -48,6 +48,8 @@
 #include "btstack_transport.h"
 #include "config_path.h"
 #include "hci_capture.h"
+#include "abr_controller.h"
+#include "audio_dsp.h"
 #include "latency_mode.h"
 #include "link_stats.h"
 #include "media_payload_limit.h"
@@ -79,6 +81,8 @@ static std::string g_afh;
 static uint16_t g_max_packet = MEDIA_PAYLOAD_LIMIT_DEFAULT;
 /* --latency standard|low|lowest (latency_mode.h) */
 static LatencyMode g_latency = latency_mode("standard");
+/* --sbc-xq: SBC dual channel at a high bitpool when the sink allows it */
+static bool g_sbc_xq = false;
 static std::mutex g_encode_mutex;
 
 /* Audio buffer for float32->PCM conversion (sized per encoder sample width) */
@@ -96,31 +100,14 @@ static AudioCodec g_active_codec = AudioCodec::LDAC;
 static uint32_t g_timestamp = 0;
 static uint32_t g_active_channels = 2;
 static bool g_abr_enabled = false;
+static StepAbr g_step_abr;  /* AAC / SBC bitrate steps (abr_controller.h) */
 static uint32_t g_encoder_sample_bytes = 2; /* 2 for int16, 4 for int32 (24/32-bit) */
 
 /* BTstack transport */
 static std::atomic<BtStackTransport *> g_transport{nullptr};
 
-/* Convert float32 PCM (WASAPI default) to int16 PCM */
-static void convert_float32_to_int16(const float *src, int16_t *dst, uint32_t samples) {
-    for (uint32_t i = 0; i < samples; i++) {
-        float s = src[i];
-        if (s > 1.0f) s = 1.0f;
-        if (s < -1.0f) s = -1.0f;
-        dst[i] = static_cast<int16_t>(s * 32767.0f);
-    }
-}
-
-/* Convert float32 PCM (WASAPI default) to int32 PCM (24/32-bit encoder input).
- * Uses double arithmetic to avoid float32 precision overflow at INT32_MAX. */
-static void convert_float32_to_int32(const float *src, int32_t *dst, uint32_t samples) {
-    for (uint32_t i = 0; i < samples; i++) {
-        float s = src[i];
-        if (s > 1.0f) s = 1.0f;
-        if (s < -1.0f) s = -1.0f;
-        dst[i] = static_cast<int32_t>(static_cast<double>(s) * 2147483647.0);
-    }
-}
+/* float_to_int16 dither noise generator (audio_dsp.h) */
+static uint32_t g_dither_state = 0;
 
 /* Audio callback: receives PCM data, encodes, sends via transport */
 static void audio_callback(
@@ -153,21 +140,7 @@ static void audio_callback(
         static std::vector<float> float_stereo;
         if (need_downmix && use_channels == 2) {
             float_stereo.resize(frames * 2);
-            for (uint32_t f = 0; f < frames; f++) {
-                const float *ch = float_src + f * channels;
-                float fl = ch[0], fr = ch[1];
-                float fc  = (channels > 2) ? ch[2] : 0.0f;
-                float lfe = (channels > 3) ? ch[3] : 0.0f;
-                float bl  = (channels > 4) ? ch[4] : 0.0f;
-                float br  = (channels > 5) ? ch[5] : 0.0f;
-                float sl  = (channels > 6) ? ch[6] : 0.0f;
-                float sr  = (channels > 7) ? ch[7] : 0.0f;
-                /* ITU-R BS.775 stereo downmix + LFE at -6dB */
-                float_stereo[f * 2 + 0] = fl + 0.707107f * fc
-                    + 0.707107f * (bl + sl) + 0.5f * lfe;
-                float_stereo[f * 2 + 1] = fr + 0.707107f * fc
-                    + 0.707107f * (br + sr) + 0.5f * lfe;
-            }
+            downmix_to_stereo(float_src, frames, channels, 0 /* default layout */, float_stereo.data());
             float_src = float_stereo.data();
         } else if (need_downmix) {
             float_stereo.resize(frames * use_channels);
@@ -181,17 +154,11 @@ static void audio_callback(
         uint32_t buf_bytes = out_samples * sb;
         if (g_pcm_buffer.size() < buf_bytes)
             g_pcm_buffer.resize(buf_bytes);
-        if (sb == 4) {
-            convert_float32_to_int32(
-                float_src,
-                reinterpret_cast<int32_t *>(g_pcm_buffer.data()),
-                out_samples);
-        } else {
-            convert_float32_to_int16(
-                float_src,
-                reinterpret_cast<int16_t *>(g_pcm_buffer.data()),
-                out_samples);
-        }
+        if (sb == 4)
+            float_to_int32(float_src, reinterpret_cast<int32_t *>(g_pcm_buffer.data()), out_samples);
+        else
+            float_to_int16(float_src, reinterpret_cast<int16_t *>(g_pcm_buffer.data()), out_samples,
+                           g_dither_state);
         pcm_data = g_pcm_buffer.data();
     } else if (bits_per_sample == 16) {
         uint32_t total_samples = frames * channels;
@@ -394,6 +361,21 @@ static void audio_callback(
         LhdcV5Encoder *lhdc = static_cast<LhdcV5Encoder *>(encoder);
         for (uint32_t i = 0; i < sent_packets; i++) lhdc->abr_adjust(queue_before);
     }
+    /* AAC / SBC ABR: step the bitrate with the send queue backlog */
+    if (g_abr_enabled && encoder->abr_step_count() > 1) {
+        static uint64_t step_abr_tick = 0;
+        const uint64_t now64 = GetTickCount64();
+        if (now64 - step_abr_tick >= 100) {
+            step_abr_tick = now64;
+            const int before = g_step_abr.step();
+            const int step = g_step_abr.update(transport->queue_backlog_ms(),
+                                               link_stats().queue_drops.load(std::memory_order_relaxed), now64);
+            if (step != before) {
+                encoder->set_abr_step(step);
+                printf("ABR %s to %u kbps\n", step > before ? "down" : "up", encoder->get_bitrate_kbps());
+            }
+        }
+    }
 }
 
 /* --test-tone: the shared generator (test_tone.h) feeding audio_callback,
@@ -438,6 +420,7 @@ static void print_usage(const char *prog) {
     printf("  -u <path>    USB device path for BTstack (optional)\n");
     printf("  --max-packet <bytes>  Advanced: max media packet size, %u-%u (recommended: %u)\n",
            MEDIA_PAYLOAD_LIMIT_MIN, MEDIA_PAYLOAD_LIMIT_MAX, MEDIA_PAYLOAD_LIMIT_DEFAULT);
+    printf("  --sbc-xq     SBC: dual channel at a high bitpool (~550 kbps) when the sink allows it\n");
     printf("  --latency <mode>  standard, low or lowest: shorter send queue and packets,\n");
     printf("               Auto prefers fast codecs (default: standard)\n");
     printf("  --remote-sink <host[:port]|auto>  Also show what a2dpwb_sink.py (tools/linux_sink)\n");
@@ -585,6 +568,7 @@ static int run_streaming(const uint8_t target_addr[6],
 
     transport.set_media_payload_limit(g_max_packet);
     transport.set_max_queue_ms(g_latency.max_queue_ms);
+    transport.set_sbc_xq(g_sbc_xq);
     if (!g_dev.hci_tcp.empty()) transport.set_hci_tcp(g_dev.hci_tcp);
     if (!g_dev.hci_tcp.empty() || !g_dev.hci_capture.empty()) transport.set_hci_dump_enabled(false);
     if (!g_dev.hci_capture.empty()) {
@@ -797,6 +781,8 @@ static int run_streaming(const uint8_t target_addr[6],
 #endif
     }
 
+    if (selected_codec == AudioCodec::SBC)  /* negotiated channel mode and max bitpool */
+        static_cast<SbcEncoder *>(encoder.get())->set_link(transport.sbc_dual_channel(), transport.sbc_max_bitpool());
     if (!encoder->init(media_mtu, quality, sample_rate, g_active_channels)) {
         fprintf(stderr, "Failed to initialize %s encoder\n", codec_name_str(selected_codec));
         transport.disconnect();
@@ -817,6 +803,11 @@ static int run_streaming(const uint8_t target_addr[6],
         if (ldac->init_abr(100)) {
             g_abr_enabled = true;
         }
+    }
+    if (enable_abr && encoder->abr_step_count() > 1) {
+        g_abr_enabled = true;
+        g_step_abr.reset(encoder->abr_step_count(), g_latency.max_queue_ms,
+                         link_stats().queue_drops.load(std::memory_order_relaxed), GetTickCount64());
     }
 
     /* Start streaming */
@@ -1078,6 +1069,8 @@ int main(int argc, char *argv[]) {
             if (g_max_packet != v)
                 printf("--max-packet %lu is outside %u-%u, using %u\n", v,
                        MEDIA_PAYLOAD_LIMIT_MIN, MEDIA_PAYLOAD_LIMIT_MAX, g_max_packet);
+        } else if (strcmp(argv[i], "--sbc-xq") == 0) {
+            g_sbc_xq = true;
         } else if (strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
             const char *mode = argv[++i];
             if (strcmp(mode, "standard") != 0 && strcmp(mode, "low") != 0 && strcmp(mode, "lowest") != 0)
