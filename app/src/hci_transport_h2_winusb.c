@@ -1091,6 +1091,12 @@ static void usb_reset_pipes(void){
     if (!WinUsb_SetPipePolicy(usb_interface_0_handle, 0, PIPE_TRANSFER_TIMEOUT, sizeof(timeout_ms), &timeout_ms)){
         fprintf(stderr, "WinUSB: control pipe timeout not set, error %lu\n", GetLastError());
     }
+    /* No selective suspend: a suspend / resume of the adapter in a quiet
+     * moment is a USB hiccup, and an audible gap in a running stream */
+    UCHAR auto_suspend = FALSE;
+    if (!WinUsb_SetPowerPolicy(usb_interface_0_handle, AUTO_SUSPEND, sizeof(auto_suspend), &auto_suspend)){
+        fprintf(stderr, "WinUSB: selective suspend not disabled, error %lu\n", GetLastError());
+    }
     fprintf(stderr, "WinUSB: HCI pipes reset (event 0x%02x, ACL 0x%02x/0x%02x)\n",
             event_in_addr, acl_in_addr, acl_out_addr);
     fflush(stderr);
@@ -1434,7 +1440,7 @@ static int usb_close(void){
         uint8_t hci_reset_cmd[] = { 0x03, 0x0c, 0x00 };
         WINUSB_SETUP_PACKET setup_packet;
         memset(&setup_packet, 0, sizeof(setup_packet));
-        setup_packet.RequestType = USB_REQUEST_TYPE_CLASS | USB_RECIPIENT_DEVICE;
+        setup_packet.RequestType = (int) USB_REQUEST_TYPE_CLASS | USB_RECIPIENT_DEVICE;
         setup_packet.Length = sizeof(hci_reset_cmd);
         ULONG sent = 0;
         if (!WinUsb_ControlTransfer(usb_interface_0_handle, setup_packet, hci_reset_cmd, sizeof(hci_reset_cmd), &sent, NULL)){
@@ -1505,7 +1511,7 @@ static int usb_send_cmd_packet(uint8_t *packet, int size){
 	// Start trasnsfer
 	WINUSB_SETUP_PACKET setup_packet;
 	memset(&setup_packet, 0, sizeof(setup_packet));
-	setup_packet.RequestType =  USB_REQUEST_TYPE_CLASS | USB_RECIPIENT_DEVICE;
+	setup_packet.RequestType =  (int) USB_REQUEST_TYPE_CLASS | USB_RECIPIENT_DEVICE;
 	// A2DPWB: wLength is the command length (upstream used sizeof(size))
 	setup_packet.Length = (USHORT) size;
 	BOOL result = WinUsb_ControlTransfer(usb_interface_0_handle, setup_packet, packet, size,  NULL, &usb_overlapped_command_out);

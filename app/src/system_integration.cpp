@@ -100,3 +100,24 @@ std::wstring GetExePathW()
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     return std::wstring(path);
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Power throttling                                                          */
+/* -------------------------------------------------------------------------- */
+
+#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
+#endif
+
+void DisablePowerThrottling()
+{
+    /* Windows 11 slows down background processes and their timers to save
+     * power; for a real-time audio stream that means late packets and
+     * dropouts. Opt out of both (older Windows ignores the call). */
+    PROCESS_POWER_THROTTLING_STATE state = {};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
+                        PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    state.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof(state));
+}

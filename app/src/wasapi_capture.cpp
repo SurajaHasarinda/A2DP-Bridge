@@ -57,6 +57,7 @@ WasapiCapture::~WasapiCapture() {
 
     if (capture_client_) { capture_client_->Release(); capture_client_ = nullptr; }
     if (audio_client_) { audio_client_->Release(); audio_client_ = nullptr; }
+    if (silent_client_) { silent_client_->Release(); silent_client_ = nullptr; }
     if (device_) { device_->Release(); device_ = nullptr; }
     if (enumerator_) { enumerator_->Release(); enumerator_ = nullptr; }
     if (buffer_event_) { CloseHandle(buffer_event_); buffer_event_ = nullptr; }
@@ -237,8 +238,42 @@ bool WasapiCapture::init(uint32_t preferred_sample_rate, const wchar_t *device_i
         return false;
     }
 
+    init_silent_render();
+
     fprintf(stderr, "WasapiCapture: Initialized successfully\n");
     return true;
+}
+
+/* Loopback capture only delivers data while some stream renders to the
+ * endpoint. In a pause the A2DP stream would stop and the headphones run dry
+ * and rebuffer, so every sound after a pause starts jagged. A started render
+ * stream fed once with silence keeps the endpoint running (the OBS approach);
+ * it needs no refilling. Failure only costs the gap filling. */
+void WasapiCapture::init_silent_render() {
+    IAudioClient *client = nullptr;
+    HRESULT hr = device_->Activate(IID_IAudioClient_, CLSCTX_ALL, nullptr, reinterpret_cast<void **>(&client));
+    WAVEFORMATEX *fmt = nullptr;
+    if (SUCCEEDED(hr)) hr = client->GetMixFormat(&fmt);
+    if (SUCCEEDED(hr))
+        hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0,
+                                static_cast<REFERENCE_TIME>(BUFFER_DURATION_MS) * 10000, 0, fmt, nullptr);
+    if (fmt) CoTaskMemFree(fmt);
+
+    IAudioRenderClient *render = nullptr;
+    UINT32 frames = 0;
+    BYTE *buffer = nullptr;
+    if (SUCCEEDED(hr)) hr = client->GetBufferSize(&frames);
+    if (SUCCEEDED(hr)) hr = client->GetService(__uuidof(IAudioRenderClient), reinterpret_cast<void **>(&render));
+    if (SUCCEEDED(hr)) hr = render->GetBuffer(frames, &buffer);
+    if (SUCCEEDED(hr)) hr = render->ReleaseBuffer(frames, AUDCLNT_BUFFERFLAGS_SILENT);
+    if (render) render->Release();
+
+    if (FAILED(hr)) {
+        LOG_WARN("WasapiCapture: silent render stream unavailable (0x%08lx); pauses may cause dropouts", hr);
+        if (client) client->Release();
+        return;
+    }
+    silent_client_ = client;
 }
 
 /* Completion handler for ActivateAudioInterfaceAsync. It must be agile
@@ -389,6 +424,9 @@ bool WasapiCapture::start(AudioCallback callback) {
     ResetEvent(stop_event_);
     running_.store(true);
 
+    /* Start the silent render stream first, so loopback has data from the start */
+    if (silent_client_) silent_client_->Start();
+
     /* Start the audio client */
     HRESULT hr = audio_client_->Start();
     if (FAILED(hr)) {
@@ -427,6 +465,7 @@ void WasapiCapture::stop() {
     if (audio_client_) {
         audio_client_->Stop();
     }
+    if (silent_client_) silent_client_->Stop();
 
     fprintf(stderr, "WasapiCapture: Capture stopped\n");
 }

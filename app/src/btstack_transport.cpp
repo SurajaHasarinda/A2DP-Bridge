@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <windows.h>
+#include <avrt.h>
 
 /* BTstack headers (C) — must come before our avdtp.h to avoid include guard collision */
 extern "C" {
@@ -410,6 +411,13 @@ bool BtStackTransport::init(const char *usb_path) {
 unsigned long __stdcall BtStackTransport::btstack_thread_proc(void *param) {
     auto *self = static_cast<BtStackTransport *>(param);
 
+    /* This thread sends every media packet and runs all USB I/O. At normal
+     * priority a busy CPU (a game) delays it and packets go out late, then in
+     * bursts: give it the same multimedia priority as the encode thread. */
+    DWORD task_index = 0;
+    HANDLE avrt_handle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_index);
+    if (!avrt_handle) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
     /* Initialize BTstack memory pools (must be first!) */
     btstack_memory_init();
 
@@ -523,6 +531,7 @@ unsigned long __stdcall BtStackTransport::btstack_thread_proc(void *param) {
     fflush(stderr);
     self->deinit_btstack();
 
+    if (avrt_handle) AvRevertMmThreadCharacteristics(avrt_handle);
     return 0;
 }
 
@@ -659,8 +668,9 @@ void BtStackTransport::setup_hci_and_power_on() {
     /* Allow role switch — many headphones require being master */
     gap_set_allow_role_switch(true);
 
-    /* Enable role switch and sniff mode in link policy */
-    gap_set_default_link_policy_settings(0x0005);
+    /* Role switch only, no sniff mode: in sniff the link wakes only every few
+     * slots, which starves a running A2DP stream */
+    gap_set_default_link_policy_settings(0x0001);
 
     /* Extend page timeout to ~20 seconds (0x8000 * 0.625ms = 20.48s) */
     gap_set_page_timeout(0x8000);
@@ -2352,11 +2362,14 @@ bool BtStackTransport::send_media(const uint8_t *data, uint32_t size,
     {
         std::lock_guard<std::mutex> lock(send_mutex_);
 
-        /* Drop if queue is full */
+        /* Queue full (the radio fell behind): drop the oldest packet, not this
+         * one, so playback resumes with current audio instead of staying
+         * behind by a whole queue of stale packets */
         if (media_queue_count_.load() >= MEDIA_QUEUE_CAPACITY) {
+            media_queue_tail_ = (media_queue_tail_ + 1) % MEDIA_QUEUE_CAPACITY;
+            media_queue_count_.fetch_sub(1);
             send_failure_count_.fetch_add(1);
             link_stats().queue_drops.fetch_add(1, std::memory_order_relaxed);
-            return false;
         }
 
         MediaPacket &slot = media_queue_[media_queue_head_];

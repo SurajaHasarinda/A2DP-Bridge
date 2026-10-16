@@ -60,6 +60,7 @@ public:
 private:
     static DWORD WINAPI capture_thread_proc(LPVOID param);
     void capture_loop();
+    void init_silent_render();
 
     uint32_t sample_rate_ = 0;
     uint32_t channels_ = 0;
@@ -71,6 +72,9 @@ private:
     IMMDevice *device_ = nullptr;
     IAudioClient *audio_client_ = nullptr;
     IAudioCaptureClient *capture_client_ = nullptr;
+    /* Silent render stream on the captured endpoint: loopback delivers no
+     * data while nothing plays, which starves the headphones (see init) */
+    IAudioClient *silent_client_ = nullptr;
 
     /* Capture thread */
     HANDLE thread_handle_ = nullptr;

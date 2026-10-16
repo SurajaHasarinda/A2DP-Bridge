@@ -14,6 +14,10 @@ bool RegisterStartup(const std::string &args = "--minimized");
 bool UnregisterStartup();
 bool IsStartupRegistered();
 
+/* Keep Windows from throttling this process (EcoQoS, coarse timers) while
+ * it runs in the background or tray, e.g. behind a game */
+void DisablePowerThrottling();
+
 /* Utility */
 std::wstring GetExePathW();
 

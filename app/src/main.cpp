@@ -51,6 +51,7 @@
 #include "link_stats.h"
 #include "media_payload_limit.h"
 #include "remote_sink_client.h"
+#include "system_integration.h"
 #include "test_tone.h"
 #include "ui/ui_app.h"
 
@@ -951,6 +952,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to initialize COM: 0x%08lx\n", hr);
         return 1;
     }
+
+    DisablePowerThrottling();
 
     /* Single instance check (GUI mode only) */
     HANDLE single_instance_mutex = nullptr;
