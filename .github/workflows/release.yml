@@ -1,0 +1,76 @@
+# Builds the Windows package and publishes a GitHub release when a version tag is pushed.
+#   git tag v1.1.0 && git push origin v1.1.0
+# The tag must match the version in CMakeLists.txt (project VERSION + A2DPWB_VERSION_SUFFIX).
+# A tag with a suffix (v1.2.0-beta.1) is published as a pre-release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # build only, for testing; no release is published
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Check tag matches the CMake version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $cm = Get-Content CMakeLists.txt -Raw
+          $ver = [regex]::Match($cm, 'project\(\w+ VERSION ([0-9.]+)').Groups[1].Value
+          $suffix = [regex]::Match($cm, 'set\(A2DPWB_VERSION_SUFFIX "([^"]*)"\)').Groups[1].Value
+          $expected = "v$ver$suffix"
+          if ("${{ github.ref_name }}" -ne $expected) {
+            Write-Error "Tag ${{ github.ref_name }} does not match CMakeLists.txt version $expected"
+            exit 1
+          }
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Install Ninja and Inno Setup
+        run: choco install ninja innosetup -y --no-progress
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+
+      - name: Build and package
+        run: cmake --build build --target A2DPWB_dist
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: A2DPWB-${{ github.ref_name }}
+          path: |
+            build/dist/*.zip
+            build/dist/*-setup.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: A2DP Bridge ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            build/dist/*-win64-portable.zip
+            build/dist/*-win64-setup.exe
