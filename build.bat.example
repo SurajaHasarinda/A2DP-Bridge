@@ -1,0 +1,44 @@
+@echo off
+REM ============================================================
+REM Build script for A2DPWB
+REM
+REM Usage:
+REM   1. Copy build.bat.example to build.bat
+REM   2. Edit the CMake path below to match your environment
+REM   3. Run build.bat
+REM
+REM Qt: the MSVC 2022 64-bit kit of Qt 6.5+ (6.8 recommended), e.g.
+REM     pip install aqtinstall
+REM     aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -O D:\Qt
+REM Run this script from a "x64 Native Tools Command Prompt for VS" (it needs cl.exe).
+REM
+REM CMake path examples:
+REM     "C:\Program Files\CMake\bin\cmake.exe"
+REM ============================================================
+
+set CMAKE_EXE="C:\Program Files\CMake\bin\cmake.exe"
+set QT_DIR=D:/Qt/6.8.3/msvc2022_64
+
+if not exist build mkdir build
+git submodule update --init --recursive
+%CMAKE_EXE% -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=%QT_DIR%
+if errorlevel 1 goto :fail
+
+%CMAKE_EXE% --build build --target A2DPWB --config Release
+if errorlevel 1 goto :fail
+
+REM Release package: build\dist\A2DPWB-<version>-win64.zip
+%CMAKE_EXE% --build build --target A2DPWB_dist --config Release
+if errorlevel 1 goto :fail
+
+echo.
+echo Build succeeded.
+for %%F in (build\dist\A2DPWB-*-win64.zip) do echo Package: %%~fF
+pause
+exit /b 0
+
+:fail
+echo.
+echo Build FAILED.
+pause
+exit /b 1

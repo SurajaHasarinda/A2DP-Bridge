@@ -1,0 +1,13 @@
+{
+  "name": "lhdcv5-encoder",
+  "version": "1.0.0",
+  "description": "Portable C99 port of the LHDC V5 (lossy) Bluetooth audio encoder, bit-exact with the AOSP Rust implementation. Suitable for ESP32 and other embedded targets.",
+  "keywords": ["lhdc", "audio", "codec", "bluetooth", "a2dp", "encoder"],
+  "license": "Apache-2.0",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include"
+  }
+}

@@ -1,0 +1,125 @@
+/* A2DPWB stylesheet. @tokens@ are filled in by Theme::apply(). */
+
+QWidget { color: @text@; }
+QMainWindow, QDialog { background: @bg@; }
+QLabel { background: transparent; }
+QLabel[muted="true"] { color: @textMuted@; }
+QLabel[secondary="true"] { color: @textSecondary@; }
+QLabel[heading="true"] { font-weight: 600; font-size: 14px; }
+QLabel[title="true"] { font-weight: 600; font-size: 18px; }
+QLabel[error="true"] { color: @error@; }
+QLabel[ok="true"] { color: @ok@; }
+QLabel[warning="true"] { color: @warning@; }
+
+QToolTip { background: @card@; color: @text@; border: 1px solid @border@; padding: 4px 6px; }
+
+/* Surfaces */
+QFrame#card, QFrame#profileCard {
+    background: @card@; border: 1px solid @border@; border-radius: 8px;
+}
+QFrame#profileCard:hover { background: @cardHover@; }
+QFrame#profileCard[active="true"] { border: 1px solid @accent@; }
+QFrame#warnBar {
+    background: @warningBg@; border: 1px solid @warning@; border-radius: 8px;
+}
+QFrame#warnBar QLabel { color: @warning@; }
+
+/* Buttons */
+QPushButton {
+    background: @card@; border: 1px solid @border@; border-radius: 6px;
+    padding: 6px 14px; min-height: 18px;
+}
+QPushButton:hover { background: @cardHover@; }
+QPushButton:pressed { background: @border@; }
+QPushButton:disabled { color: @textMuted@; }
+QPushButton[accent="true"], QPushButton:default {
+    background: @accent@; color: @accentText@; border: 1px solid @accent@;
+}
+QPushButton[accent="true"]:hover, QPushButton:default:hover { background: @accentHover@; }
+QPushButton[accent="true"]:pressed, QPushButton:default:pressed { background: @accentPressed@; }
+QPushButton[accent="true"]:disabled { background: @border@; color: @textMuted@; border-color: @border@; }
+
+QToolButton {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    padding: 4px; min-width: 24px; min-height: 24px;
+}
+QToolButton:hover { background: @cardHover@; border-color: @border@; }
+QToolButton:pressed { background: @border@; }
+QToolButton[danger="true"]:hover { color: @error@; }
+QToolButton::menu-indicator { image: none; }
+
+/* Inputs */
+QLineEdit, QSpinBox, QComboBox, QPlainTextEdit, QTextEdit {
+    background: @input@; border: 1px solid @border@; border-radius: 6px;
+    padding: 5px 8px; selection-background-color: @accent@; selection-color: @accentText@;
+}
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QPlainTextEdit:focus { border: 1px solid @accent@; }
+QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled { color: @textMuted@; }
+QLineEdit[invalid="true"] { border: 1px solid @error@; color: @error@; }
+QComboBox { padding-right: 22px; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox::down-arrow { image: url(@chevronDown@); width: 10px; height: 10px; }
+QSpinBox { padding-right: 24px; }
+QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: border; width: 22px; border: none; background: transparent; }
+QSpinBox::up-button { subcontrol-position: top right; }
+QSpinBox::down-button { subcontrol-position: bottom right; }
+QSpinBox::up-arrow { image: url(@chevronUp@); width: 8px; height: 8px; }
+QSpinBox::down-arrow { image: url(@chevronDown@); width: 8px; height: 8px; }
+QComboBox QAbstractItemView {
+    background: @card@; border: 1px solid @border@; border-radius: 6px; padding: 4px;
+    selection-background-color: @accent@; selection-color: @accentText@; outline: none;
+}
+QListView, QTableView {
+    background: @input@; border: 1px solid @border@; border-radius: 6px; outline: none;
+    selection-background-color: @accent@; selection-color: @accentText@; alternate-background-color: @card@;
+}
+QListView::item { padding: 4px 6px; }
+QHeaderView::section {
+    background: @card@; color: @textSecondary@; border: none; border-bottom: 1px solid @border@; padding: 4px 6px;
+}
+QTableCornerButton::section { background: @card@; border: none; }
+
+/* Slider */
+QSlider::groove:horizontal { height: 4px; background: @border@; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: @accent@; border-radius: 2px; }
+QSlider::handle:horizontal {
+    width: 16px; height: 16px; margin: -6px 0; border-radius: 9px;
+    background: @card@; border: 4px solid @accent@;
+}
+QSlider::handle:horizontal:hover { border-width: 3px; }
+
+/* Gauge */
+QProgressBar { background: @border@; border: none; border-radius: 4px; max-height: 8px; min-height: 8px; text-align: center; }
+QProgressBar::chunk { background: @accent@; border-radius: 4px; }
+QProgressBar[warn="true"]::chunk { background: @error@; }
+
+/* Scrollbars */
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: @border@; border-radius: 3px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: @textMuted@; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+QScrollBar::handle:horizontal { background: @border@; border-radius: 3px; min-width: 28px; }
+QScrollBar::handle:horizontal:hover { background: @textMuted@; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+
+/* Menus */
+QMenu {
+    background: @card@; border: 1px solid @border@; border-radius: 8px; padding: 4px;
+}
+QMenu::item { padding: 6px 24px 6px 12px; border-radius: 4px; }
+QMenu::item:selected { background: @cardHover@; }
+QMenu::item:disabled { color: @textMuted@; }
+QMenu::separator { height: 1px; background: @border@; margin: 4px 8px; }
+
+QFrame[frameShape="4"] { color: @border@; }   /* HLine */
+
+/* Status pill */
+QLabel#pill { border-radius: 10px; padding: 2px 10px; font-weight: 600; }
+QLabel#pill[state="idle"] { color: @textSecondary@; background: @border@; }
+QLabel#pill[state="connecting"], QLabel#pill[state="reconnecting"] { color: @warning@; background: @warningBg@; }
+QLabel#pill[state="streaming"] { color: @ok@; background: transparent; border: 1px solid @ok@; }
+QLabel#pill[state="error"] { color: @error@; background: transparent; border: 1px solid @error@; }
