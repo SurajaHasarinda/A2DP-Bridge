@@ -13,10 +13,22 @@ Stream Windows system audio to Bluetooth headphones with high-quality codecs (LD
 | aptX Low Latency (experimental) | 352 kbps | 44.1 / 48 kHz | 16 |
 | aptX | 352 / 384 kbps | 44.1 / 48 kHz | 16 |
 | AAC | 128 / 192 / 256 kbps | 44.1 / 48 kHz | 16 |
-| SBC | up to ~345 kbps | 44.1 / 48 kHz | 16 |
+| SBC | up to ~345 kbps (~550 with SBC XQ) | 44.1 / 48 kHz | 16 |
 | LHDC V5 (experimental) | 400–1000 kbps | 44.1–192 kHz | 16 / 24 |
 
 Auto mode picks the best codec your headphones support. aptX Adaptive is not supported.
+
+## Features
+
+- **Latency modes**: Standard, Low and Lowest (gaming) per profile
+- **Adaptive bitrate (ABR)**: lowers quality on a weak link, raises it again when stable (LDAC, LHDC V5, AAC, SBC)
+- **SBC XQ**: higher-quality SBC (~550 kbps) when the headphones allow it
+- **Surround downmix**: 5.1 / 7.1 game audio mixed to stereo, so dialogue isn't lost
+- **Clean conversion**: soft limiting and dither, no harsh clipping
+- **Smooth playback**: no dropouts in pauses, short catch-up after a stall
+- **Stable link**: stays in control of the connection, avoids your Wi-Fi channel automatically
+- **Link Quality window**: bitrate, signal, send gaps and stalls
+- **Profiles, tray, auto-start** and 8 UI languages
 
 ## Requirements
 
